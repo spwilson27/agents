@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 
-SOURCE_FILE = os.path.join(".agents", "AGENT.md")
+SOURCE_FILE = "AGENTS.md"
 
 # Mapping of CLI name -> project-root-relative destination path
 TARGETS = {
@@ -14,7 +14,7 @@ TARGETS = {
     "gemini": "GEMINI.md",
     "copilot": os.path.join(".github", "copilot-instructions.md"),
     "qwen": "QWEN.md",
-    "opencode": "AGENTS.md",  # same as codex
+    # "opencode": "AGENTS.md",  # same as codex, default file
 }
 
 
