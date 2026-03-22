@@ -32,7 +32,7 @@ if [ "$1" = "show" ] && [ "$2" = ":src/main.rs" ]; then
   exit 0
 fi
 if [ "$1" = "commit" ] && [ "$2" = "--file" ]; then
-  cp "$3" "$log_dir/committed-message.txt"
+  grep -v '^#' "$3" > "$log_dir/committed-message.txt"
   exit 0
 fi
 echo "unexpected git invocation: $*" >&2
@@ -413,6 +413,10 @@ fn run_agents_with_env(
         .current_dir(root)
         .env("PATH", path)
         .env("EDITOR", bin_dir.join("editor"));
+
+    if bin_dir.join("codex").is_file() {
+        command.env("AGENTS_CODEX_BIN", bin_dir.join("codex"));
+    }
 
     for (key, value) in extra_env {
         command.env(key, value);

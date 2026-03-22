@@ -41,6 +41,23 @@ impl AgentCli {
             Self::Codex => "codex",
         }
     }
+
+    fn env_var_name(self) -> &'static str {
+        match self {
+            Self::Qwen => "AGENTS_QWEN_BIN",
+            Self::Gemini => "AGENTS_GEMINI_BIN",
+            Self::Claude => "AGENTS_CLAUDE_BIN",
+            Self::Codex => "AGENTS_CODEX_BIN",
+        }
+    }
+
+    fn command(self) -> Command {
+        if let Some(path) = env::var_os(self.env_var_name()) {
+            Command::new(path)
+        } else {
+            Command::new(self.binary_name())
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,9 +93,17 @@ impl std::fmt::Display for AgentsError {
                 stderr,
             } => {
                 if !stderr.trim().is_empty() {
-                    write!(f, "{program} exited with status {status}: {}", stderr.trim())
+                    write!(
+                        f,
+                        "{program} exited with status {status}: {}",
+                        stderr.trim()
+                    )
                 } else if !stdout.trim().is_empty() {
-                    write!(f, "{program} exited with status {status}: {}", stdout.trim())
+                    write!(
+                        f,
+                        "{program} exited with status {status}: {}",
+                        stdout.trim()
+                    )
                 } else {
                     write!(f, "{program} exited with status {status}")
                 }
@@ -91,7 +116,10 @@ impl StdError for AgentsError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Io(err) => Some(err),
-            Self::MissingEditor | Self::NothingStaged | Self::TimedOut { .. } | Self::CommandFailed { .. } => None,
+            Self::MissingEditor
+            | Self::NothingStaged
+            | Self::TimedOut { .. }
+            | Self::CommandFailed { .. } => None,
         }
     }
 }
@@ -151,7 +179,7 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
     }
     let file_context = build_file_context(root)?;
 
-    let prompt = build_commit_prompt(&diff, &file_context);
+    let prompt = build_commit_prompt(&diff, &file_context.context);
     eprintln!(
         "asking {} for a commit message ({}s timeout)...",
         cli.binary_name(),
@@ -159,11 +187,15 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
     );
     let initial_message = run_agent(cli, root, &prompt)?;
     eprintln!("opening $EDITOR; save and quit to continue...");
-    let edited_message = edit_message(&initial_message)?;
+    let mut edited_message = edit_message(&initial_message)?;
 
     if edited_message.trim().is_empty() {
         println!("message empty, aborting commit");
         return Ok(CommitOutcome::AbortedEmptyMessage);
+    }
+
+    for l in file_context.files.lines() {
+        edited_message.push_str(format!("# {}", l).as_str());
     }
 
     let mut message_file = NamedTempFile::new()?;
@@ -190,11 +222,19 @@ fn agent_timeout() -> Duration {
         .unwrap_or(DEFAULT_AGENT_TIMEOUT)
 }
 
-fn build_file_context(root: &Path) -> Result<String, AgentsError> {
+struct GitContext {
+    files: String,
+    context: String,
+}
+
+fn build_file_context(root: &Path) -> Result<GitContext, AgentsError> {
     let files = run_text_command(
-        Command::new("git")
-            .current_dir(root)
-            .args(["diff", "--cached", "--name-only", "--diff-filter=ACMRD"]),
+        Command::new("git").current_dir(root).args([
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMRD",
+        ]),
         None,
     )?;
 
@@ -222,9 +262,15 @@ fn build_file_context(root: &Path) -> Result<String, AgentsError> {
     }
 
     if sections.is_empty() {
-        Ok(String::from("[no staged file contents available]"))
+        Ok(GitContext {
+            files,
+            context: String::from("[no staged file contents available]"),
+        })
     } else {
-        Ok(sections.join("\n\n"))
+        Ok(GitContext {
+            files,
+            context: sections.join("\n\n"),
+        })
     }
 }
 
@@ -250,25 +296,23 @@ Staged file contents:\n\
 fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsError> {
     match cli {
         AgentCli::Gemini => run_text_command(
-            Command::new(cli.binary_name()).current_dir(root).arg("-y"),
+            cli.command().current_dir(root).arg("-y"),
             Some(prompt),
         ),
         AgentCli::Claude => run_parsed_command(
-            Command::new(cli.binary_name())
-                .current_dir(root)
-                .args([
-                    "-p",
-                    "--dangerously-skip-permissions",
-                    "--output-format",
-                    "stream-json",
-                    "--include-partial-messages",
-                    "--verbose",
-                ]),
+            cli.command().current_dir(root).args([
+                "-p",
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ]),
             Some(prompt),
             parse_stream_json_line,
         ),
         AgentCli::Qwen => run_parsed_command(
-            Command::new(cli.binary_name()).current_dir(root).args([
+            cli.command().current_dir(root).args([
                 "-y",
                 "--output-format",
                 "stream-json",
@@ -286,7 +330,8 @@ fn run_codex_command(root: &Path, prompt: &str) -> Result<String, AgentsError> {
     let output_path = output_file.path().to_path_buf();
 
     run_command(
-        Command::new(AgentCli::Codex.binary_name())
+        AgentCli::Codex
+            .command()
             .current_dir(root)
             .arg("exec")
             .arg("--json")
@@ -427,7 +472,12 @@ fn run_interactive_status_command(command: &mut Command) -> Result<(), AgentsErr
     }
 }
 
-fn command_failed(program: &OsStr, status: ExitStatus, stdout: &[u8], stderr: &[u8]) -> AgentsError {
+fn command_failed(
+    program: &OsStr,
+    status: ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> AgentsError {
     AgentsError::CommandFailed {
         program: program.to_string_lossy().into_owned(),
         status,
@@ -548,10 +598,17 @@ mod tests {
             }
 
             assert!(dest.is_file(), "{rel} was not created");
-            assert_eq!(fs::read_to_string(&dest).unwrap(), content, "{rel} has wrong content");
+            assert_eq!(
+                fs::read_to_string(&dest).unwrap(),
+                content,
+                "{rel} has wrong content"
+            );
         }
 
-        let expected: HashSet<PathBuf> = TARGETS.iter().map(|(_, rel)| tmpdir.path().join(rel)).collect();
+        let expected: HashSet<PathBuf> = TARGETS
+            .iter()
+            .map(|(_, rel)| tmpdir.path().join(rel))
+            .collect();
         let actual: HashSet<PathBuf> = written.into_iter().collect();
         assert_eq!(actual, expected);
     }
@@ -587,13 +644,16 @@ mod tests {
 
     #[test]
     fn parses_stream_json_result_messages() {
-        let parsed = parse_stream_json_line(r#"{"type":"result","result":"feat: add commit helper"}"#);
+        let parsed =
+            parse_stream_json_line(r#"{"type":"result","result":"feat: add commit helper"}"#);
         assert_eq!(parsed.as_deref(), Some("feat: add commit helper"));
     }
 
     #[test]
     fn parses_codex_agent_messages() {
-        let parsed = parse_codex_json_line(r#"{"type":"item.completed","item":{"type":"agent_message","text":"feat: add commit helper"}}"#);
+        let parsed = parse_codex_json_line(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"feat: add commit helper"}}"#,
+        );
         assert_eq!(parsed.as_deref(), Some("feat: add commit helper"));
     }
 }
