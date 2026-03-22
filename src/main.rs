@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::process;
 
-use clap::{Parser, Subcommand};
 use agents::AgentCli;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -22,9 +22,16 @@ enum Command {
         #[arg(long, default_value = ".", help = "Project root directory.")]
         root: PathBuf,
     },
-    #[command(about = "Generate a commit message from the staged diff with an agent CLI, then open it in $EDITOR.")]
+    #[command(
+        about = "Generate a commit message from the staged diff with an agent CLI, then open it in $EDITOR."
+    )]
     Commit {
-        #[arg(long, value_enum, help = "Agent CLI to use for generating the initial commit message.")]
+        #[arg(
+            long,
+            default_value = "codex",
+            value_enum,
+            help = "Agent CLI to use for generating the initial commit message."
+        )]
         cli: AgentCli,
         #[arg(long, default_value = ".", help = "Git repository root directory.")]
         root: PathBuf,
