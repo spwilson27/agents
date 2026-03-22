@@ -186,16 +186,13 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
         agent_timeout().as_secs()
     );
     let initial_message = run_agent(cli, root, &prompt)?;
+    let initial_message = add_status_comment(&initial_message, &file_context.status_comment);
     eprintln!("opening $EDITOR; save and quit to continue...");
-    let mut edited_message = edit_message(&initial_message)?;
+    let edited_message = edit_message(&initial_message)?;
 
     if edited_message.trim().is_empty() {
         println!("message empty, aborting commit");
         return Ok(CommitOutcome::AbortedEmptyMessage);
-    }
-
-    for l in file_context.files.lines() {
-        edited_message.push_str(format!("# {}", l).as_str());
     }
 
     let mut message_file = NamedTempFile::new()?;
@@ -223,7 +220,7 @@ fn agent_timeout() -> Duration {
 }
 
 struct GitContext {
-    files: String,
+    status_comment: String,
     context: String,
 }
 
@@ -235,6 +232,12 @@ fn build_file_context(root: &Path) -> Result<GitContext, AgentsError> {
             "--name-only",
             "--diff-filter=ACMRD",
         ]),
+        None,
+    )?;
+    let numstat = run_text_command(
+        Command::new("git")
+            .current_dir(root)
+            .args(["diff", "--cached", "--numstat", "--diff-filter=ACMRD"]),
         None,
     )?;
 
@@ -263,15 +266,59 @@ fn build_file_context(root: &Path) -> Result<GitContext, AgentsError> {
 
     if sections.is_empty() {
         Ok(GitContext {
-            files,
+            status_comment: build_status_comment(&numstat),
             context: String::from("[no staged file contents available]"),
         })
     } else {
         Ok(GitContext {
-            files,
+            status_comment: build_status_comment(&numstat),
             context: sections.join("\n\n"),
         })
     }
+}
+
+fn build_status_comment(numstat: &str) -> String {
+    let mut lines = Vec::new();
+    lines.push(String::from("#"));
+    lines.push(String::from("# Changes to be committed:"));
+    for entry in numstat.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let mut parts = entry.splitn(3, '\t');
+        let additions = parts.next().unwrap_or_default();
+        let deletions = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+
+        if path.is_empty() {
+            continue;
+        }
+
+        let summary = match (additions.parse::<u64>(), deletions.parse::<u64>()) {
+            (Ok(additions), Ok(deletions)) => {
+                let total = additions + deletions;
+                format!("{total} lines changed (+{additions} -{deletions})")
+            }
+            _ => String::from("binary file changed"),
+        };
+        lines.push(format!("# {path} | {summary}"));
+    }
+    lines.push(String::from("#"));
+    lines.join("\n")
+}
+
+fn add_status_comment(message: &str, status_comment: &str) -> String {
+    let mut combined = message.to_owned();
+    if status_comment.is_empty() {
+        return combined;
+    }
+
+    if !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    if !combined.ends_with("\n\n") {
+        combined.push('\n');
+    }
+    combined.push_str(status_comment);
+    combined.push('\n');
+    combined
 }
 
 fn build_commit_prompt(diff: &str, file_context: &str) -> String {
@@ -572,7 +619,8 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentCli, TARGETS, build_commit_prompt, doc, parse_codex_json_line, parse_stream_json_line,
+        AgentCli, TARGETS, add_status_comment, build_commit_prompt, build_status_comment, doc,
+        parse_codex_json_line, parse_stream_json_line,
     };
     use std::collections::HashSet;
     use std::fs;
@@ -632,6 +680,24 @@ mod tests {
         assert!(prompt.contains("diff --git a/foo b/foo"));
         assert!(prompt.contains("Staged file contents:"));
         assert!(prompt.contains("File: foo"));
+    }
+
+    #[test]
+    fn status_comment_formats_files_with_change_counts() {
+        let comment = build_status_comment("2\t1\tsrc/main.rs\n-\t-\tassets/logo.png\n");
+
+        assert!(comment.contains("# Changes to be committed:"));
+        assert!(comment.contains("# src/main.rs | 3 lines changed (+2 -1)"));
+        assert!(comment.contains("# assets/logo.png | binary file changed"));
+        assert!(comment.lines().all(|line| line.starts_with('#')));
+    }
+
+    #[test]
+    fn add_status_comment_separates_message_from_comment_block() {
+        let combined = add_status_comment("feat: update flow\n", "#\n# Changes to be committed:\n# src/main.rs | 1 lines changed (+1 -0)\n#");
+
+        assert!(combined.starts_with("feat: update flow\n\n#\n# Changes to be committed:\n"));
+        assert!(combined.ends_with("#\n"));
     }
 
     #[test]
