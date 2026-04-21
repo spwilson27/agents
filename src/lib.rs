@@ -45,7 +45,7 @@ impl Phase {
             Self::Plan => "prompt_01.md",
             Self::Implement => "prompt_02.md",
             Self::Land => "prompt_03.md",
-            Self::All => "",
+            Self::All => unreachable!("Phase::All must be expanded before prompt lookup"),
         }
     }
 
