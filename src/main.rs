@@ -56,11 +56,6 @@ enum Command {
             help = "Which phase(s) to run."
         )]
         phase: Phase,
-        #[arg(
-            long,
-            help = "Directory containing prompt_0{1,2,3}.md; overrides AGENTS_PROMPTS_DIR."
-        )]
-        prompts_dir: Option<PathBuf>,
         #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
         dry_run: bool,
     },
@@ -92,16 +87,9 @@ fn main() {
             cli,
             root,
             phase,
-            prompts_dir,
             dry_run,
         }) => {
-            if let Err(err) = agents::todo_workflow(
-                &root,
-                cli,
-                phase,
-                prompts_dir.as_deref(),
-                dry_run,
-            ) {
+            if let Err(err) = agents::todo_workflow(&root, cli, phase, dry_run) {
                 eprintln!("{err}");
                 process::exit(1);
             }
