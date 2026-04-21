@@ -266,6 +266,12 @@ pub fn todo_workflow(
         .map(|p| WorkflowPlanEntry { phase: *p })
         .collect();
 
+    if matches!(cli, AgentCli::Codex) {
+        eprintln!(
+            "warning: --cli codex uses one-shot exec; claude is recommended for todo-workflow"
+        );
+    }
+
     if dry_run {
         println!("todo-workflow plan ({} phase(s)):", plan.len());
         for (idx, entry) in plan.iter().enumerate() {
@@ -274,12 +280,6 @@ pub fn todo_workflow(
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
         return Ok(plan);
-    }
-
-    if matches!(cli, AgentCli::Codex) {
-        eprintln!(
-            "warning: --cli codex uses one-shot exec; claude is recommended for todo-workflow"
-        );
     }
 
     let timeout = workflow_timeout();
