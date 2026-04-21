@@ -245,6 +245,82 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
     Ok(CommitOutcome::Committed)
 }
 
+pub struct WorkflowPlanEntry {
+    pub phase: Phase,
+    pub prompt_path: PathBuf,
+}
+
+pub fn todo_workflow(
+    root: &Path,
+    cli: AgentCli,
+    phases: &[Phase],
+    prompts_dir: Option<&Path>,
+    dry_run: bool,
+) -> Result<Vec<WorkflowPlanEntry>, AgentsError> {
+    let mut expanded: Vec<Phase> = Vec::new();
+    for phase in phases {
+        for sub in phase.expand() {
+            if !expanded.contains(&sub) {
+                expanded.push(sub);
+            }
+        }
+    }
+    if expanded.is_empty() {
+        expanded = Phase::All.expand();
+    }
+
+    let mut plan: Vec<WorkflowPlanEntry> = Vec::new();
+    for phase in &expanded {
+        let prompt_path = resolve_prompt_path(root, prompts_dir, *phase)?;
+        plan.push(WorkflowPlanEntry {
+            phase: *phase,
+            prompt_path,
+        });
+    }
+
+    if dry_run {
+        println!("todo-workflow plan ({} phase(s)):", plan.len());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!(
+                "  {}. {} -> {}",
+                idx + 1,
+                entry.phase.label(),
+                entry.prompt_path.display()
+            );
+        }
+        println!("cli: {}", cli.binary_name());
+        println!("root: {}", root.display());
+        return Ok(plan);
+    }
+
+    if matches!(cli, AgentCli::Codex) {
+        eprintln!(
+            "warning: --cli codex uses one-shot exec; claude is recommended for todo-workflow"
+        );
+    }
+
+    let timeout = workflow_timeout();
+    for (idx, entry) in plan.iter().enumerate() {
+        eprintln!(
+            "=== Phase {}: {} ===",
+            idx + 1,
+            entry.phase.label()
+        );
+        let prompt = fs::read_to_string(&entry.prompt_path)?;
+        if let Err(err) = run_agent_interactive(cli, root, &prompt, timeout) {
+            eprintln!(
+                "phase {} ({}) failed; resume with --phase {}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.label()
+            );
+            return Err(err);
+        }
+    }
+
+    Ok(plan)
+}
+
 pub fn resolve_prompt_path(
     root: &Path,
     prompts_dir: Option<&Path>,
@@ -790,7 +866,8 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         AgentCli, Phase, TARGETS, add_status_comment, build_commit_prompt, build_status_comment,
-        doc, parse_codex_json_line, parse_stream_json_line, resolve_prompt_path, workflow_timeout,
+        doc, parse_codex_json_line, parse_stream_json_line, resolve_prompt_path, todo_workflow,
+        workflow_timeout,
     };
     use std::sync::Mutex;
     use std::time::Duration;
@@ -950,6 +1027,26 @@ mod tests {
         unsafe {
             std::env::remove_var("AGENTS_WORKFLOW_TIMEOUT_SECS");
         }
+    }
+
+    #[test]
+    fn dry_run_plan_lists_phases_in_order() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("AGENTS_PROMPTS_DIR");
+        }
+        let root = tempdir().unwrap();
+        let dir = root.path().join("prompts").join("todo-workflow");
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["prompt_01.md", "prompt_02.md", "prompt_03.md"] {
+            fs::write(dir.join(name), name).unwrap();
+        }
+        let plan = todo_workflow(root.path(), AgentCli::Claude, &[Phase::All], None, true).unwrap();
+        let phases: Vec<_> = plan.iter().map(|e| e.phase).collect();
+        assert_eq!(phases, vec![Phase::Plan, Phase::Implement, Phase::Land]);
+        assert!(plan[0].prompt_path.ends_with("prompt_01.md"));
+        assert!(plan[1].prompt_path.ends_with("prompt_02.md"));
+        assert!(plan[2].prompt_path.ends_with("prompt_03.md"));
     }
 
     #[test]
