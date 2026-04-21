@@ -265,9 +265,6 @@ pub fn todo_workflow(
             }
         }
     }
-    if expanded.is_empty() {
-        expanded = Phase::All.expand();
-    }
 
     let mut plan: Vec<WorkflowPlanEntry> = Vec::new();
     for phase in &expanded {
