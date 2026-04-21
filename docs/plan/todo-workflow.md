@@ -24,8 +24,8 @@ infrastructure already used by `commit`.
 - Target files list (unused here but precedent for const tables):
   `src/lib.rs:19`.
 - Existing integration test shape: `tests/cli.rs`.
-- Prompt files already on disk: `prompt_01.md`, `prompt_02.md`, `prompt_03.md`
-  at repo root.
+- Prompt files already on disk: `prompts/todo-workflow/prompt_01.md`,
+  `prompt_02.md`, `prompt_03.md`.
 
 ## Design
 
@@ -43,9 +43,9 @@ agents todo-workflow [--cli <agent>] [--root <dir>] [--phase plan|implement|land
 - `--root`: repo to operate on. Default `.`.
 - `--phase`: which phases to run. Default `all`. Explicit values let users
   re-run a single phase.
-- `--prompts-dir`: where `prompt_0{1,2,3}.md` live. Default: the directory
-  containing the `agents` binary's source repo, resolved via a new
-  `AGENTS_PROMPTS_DIR` env var fallback, then `<root>` itself. Prompts are
+- `--prompts-dir`: where `prompt_0{1,2,3}.md` live. Default:
+  `<root>/prompts/todo-workflow`, overridable via `AGENTS_PROMPTS_DIR` env
+  var. Prompts are
   read at runtime — not compiled in — so editing a prompt does not require
   a rebuild. Decision: runtime read > `include_str!` because the prompts
   are the product here and iterate faster than the binary.
