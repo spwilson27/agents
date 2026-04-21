@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
-use agents::AgentCli;
+use agents::{AgentCli, Phase};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -36,6 +36,34 @@ enum Command {
         #[arg(long, default_value = ".", help = "Git repository root directory.")]
         root: PathBuf,
     },
+    #[command(
+        about = "Run the three-phase todo-workflow orchestration (plan, implement, land)."
+    )]
+    TodoWorkflow {
+        #[arg(
+            long,
+            default_value = "claude",
+            value_enum,
+            help = "Agent CLI to drive the orchestration."
+        )]
+        cli: AgentCli,
+        #[arg(long, default_value = ".", help = "Repository root directory.")]
+        root: PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "all",
+            help = "Which phase(s) to run."
+        )]
+        phase: Phase,
+        #[arg(
+            long,
+            help = "Directory containing prompt_0{1,2,3}.md; overrides AGENTS_PROMPTS_DIR."
+        )]
+        prompts_dir: Option<PathBuf>,
+        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -56,6 +84,24 @@ fn main() {
         },
         Some(Command::Commit { cli, root }) => {
             if let Err(err) = agents::commit(&root, cli) {
+                eprintln!("{err}");
+                process::exit(1);
+            }
+        }
+        Some(Command::TodoWorkflow {
+            cli,
+            root,
+            phase,
+            prompts_dir,
+            dry_run,
+        }) => {
+            if let Err(err) = agents::todo_workflow(
+                &root,
+                cli,
+                &[phase],
+                prompts_dir.as_deref(),
+                dry_run,
+            ) {
                 eprintln!("{err}");
                 process::exit(1);
             }
