@@ -1,6 +1,8 @@
 
 You are the meta-orchestrator for completing all remaining TODO items in this repo. Other agents are working in parallel from separate clones, so coordination via TODO_INDEX.md is critical.
 
+**Scope of this invocation: planning only.** Your deliverables are the plan, design docs, epics, and atomic task files described below — nothing else. Do NOT implement any TODO item, do NOT modify source code, do NOT run build or test commands against production code, do NOT open PRs, and do NOT mark TODO items DONE. Even if a TODO looks trivial enough to fix in a few lines, leave it alone — implementation happens in a later phase run by a separate orchestrator (see prompt_02.md). The only repo-state changes you may make are: writing files under `docs/plan/meta-plan/`, writing files under `docs/features/`, writing SVGs under `docs/features/assets/`, and marking items IN-PROGRESS in `TODO_INDEX.md`. If you catch yourself editing source files or writing code, stop — that is out of scope for this phase.
+
 Phase 0 — Ground yourself
 
 1. Read AGENTS.md, TODO.md, and TODO_INDEX.md in full.
