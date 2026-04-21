@@ -245,6 +245,58 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
     Ok(CommitOutcome::Committed)
 }
 
+pub fn resolve_prompt_path(
+    root: &Path,
+    prompts_dir: Option<&Path>,
+    phase: Phase,
+) -> Result<PathBuf, AgentsError> {
+    let filename = phase.prompt_filename();
+    let mut searched: Vec<PathBuf> = Vec::new();
+
+    let mut try_dir = |dir: PathBuf, searched: &mut Vec<PathBuf>| -> Option<PathBuf> {
+        let candidate = dir.join(filename);
+        if candidate.is_file() {
+            Some(candidate)
+        } else {
+            searched.push(dir);
+            None
+        }
+    };
+
+    if let Some(explicit) = prompts_dir {
+        if let Some(found) = try_dir(explicit.to_path_buf(), &mut searched) {
+            return Ok(found);
+        }
+    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR") {
+        if let Some(found) = try_dir(PathBuf::from(from_env), &mut searched) {
+            return Ok(found);
+        }
+    }
+
+    let default_dir = root.join("prompts").join("todo-workflow");
+    if let Some(found) = try_dir(default_dir, &mut searched) {
+        return Ok(found);
+    }
+
+    let dirs_rendered = searched
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AgentsError::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("missing prompt file {filename} (searched: {dirs_rendered})"),
+    )))
+}
+
+pub fn workflow_timeout() -> Option<Duration> {
+    env::var("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+}
+
 fn agent_timeout() -> Duration {
     env::var("AGENTS_TIMEOUT_SECS")
         .ok()
@@ -655,8 +707,12 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         AgentCli, Phase, TARGETS, add_status_comment, build_commit_prompt, build_status_comment,
-        doc, parse_codex_json_line, parse_stream_json_line,
+        doc, parse_codex_json_line, parse_stream_json_line, resolve_prompt_path, workflow_timeout,
     };
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
     use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
@@ -748,6 +804,69 @@ mod tests {
         let parsed =
             parse_stream_json_line(r#"{"type":"result","result":"feat: add commit helper"}"#);
         assert_eq!(parsed.as_deref(), Some("feat: add commit helper"));
+    }
+
+    #[test]
+    fn resolve_prompt_path_prefers_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempdir().unwrap();
+        let env_dir = tempdir().unwrap();
+        let default_dir = root.path().join("prompts").join("todo-workflow");
+        fs::create_dir_all(&default_dir).unwrap();
+        fs::write(default_dir.join("prompt_01.md"), "default").unwrap();
+        fs::write(env_dir.path().join("prompt_01.md"), "from-env").unwrap();
+
+        // Safety: tests that touch env vars serialize via ENV_LOCK.
+        unsafe {
+            std::env::set_var("AGENTS_PROMPTS_DIR", env_dir.path());
+        }
+        let resolved = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap();
+        assert_eq!(fs::read_to_string(&resolved).unwrap(), "from-env");
+
+        unsafe {
+            std::env::remove_var("AGENTS_PROMPTS_DIR");
+        }
+        let resolved = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap();
+        assert_eq!(fs::read_to_string(&resolved).unwrap(), "default");
+    }
+
+    #[test]
+    fn resolve_prompt_path_errors_when_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("AGENTS_PROMPTS_DIR");
+        }
+        let root = tempdir().unwrap();
+        let err = resolve_prompt_path(root.path(), None, Phase::Implement).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("prompt_02.md"), "msg was: {rendered}");
+        assert!(
+            rendered.contains("prompts/todo-workflow") || rendered.contains("prompts"),
+            "msg was: {rendered}"
+        );
+    }
+
+    #[test]
+    fn workflow_timeout_reads_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("AGENTS_WORKFLOW_TIMEOUT_SECS");
+        }
+        assert!(workflow_timeout().is_none());
+
+        unsafe {
+            std::env::set_var("AGENTS_WORKFLOW_TIMEOUT_SECS", "0");
+        }
+        assert!(workflow_timeout().is_none());
+
+        unsafe {
+            std::env::set_var("AGENTS_WORKFLOW_TIMEOUT_SECS", "42");
+        }
+        assert_eq!(workflow_timeout(), Some(Duration::from_secs(42)));
+
+        unsafe {
+            std::env::remove_var("AGENTS_WORKFLOW_TIMEOUT_SECS");
+        }
     }
 
     #[test]
