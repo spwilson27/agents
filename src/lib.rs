@@ -24,6 +24,10 @@ pub const TARGETS: &[(&str, &str)] = &[
     ("qwen", "QWEN.md"),
 ];
 
+const PROMPT_PLAN: &str = include_str!("../prompts/todo-workflow/prompt_01.md");
+const PROMPT_IMPLEMENT: &str = include_str!("../prompts/todo-workflow/prompt_02.md");
+const PROMPT_LAND: &str = include_str!("../prompts/todo-workflow/prompt_03.md");
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Phase {
     Plan,
@@ -40,11 +44,11 @@ impl Phase {
         }
     }
 
-    pub fn prompt_filename(self) -> &'static str {
+    pub fn prompt_body(self) -> &'static str {
         match self {
-            Self::Plan => "prompt_01.md",
-            Self::Implement => "prompt_02.md",
-            Self::Land => "prompt_03.md",
+            Self::Plan => PROMPT_PLAN,
+            Self::Implement => PROMPT_IMPLEMENT,
+            Self::Land => PROMPT_LAND,
             Self::All => unreachable!("Phase::All must be expanded before prompt lookup"),
         }
     }
@@ -247,36 +251,25 @@ pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> 
 
 pub struct WorkflowPlanEntry {
     pub phase: Phase,
-    pub prompt_path: PathBuf,
 }
 
 pub fn todo_workflow(
     root: &Path,
     cli: AgentCli,
     phase: Phase,
-    prompts_dir: Option<&Path>,
     dry_run: bool,
 ) -> Result<Vec<WorkflowPlanEntry>, AgentsError> {
     let expanded: Vec<Phase> = phase.expand();
 
-    let mut plan: Vec<WorkflowPlanEntry> = Vec::new();
-    for phase in &expanded {
-        let prompt_path = resolve_prompt_path(root, prompts_dir, *phase)?;
-        plan.push(WorkflowPlanEntry {
-            phase: *phase,
-            prompt_path,
-        });
-    }
+    let plan: Vec<WorkflowPlanEntry> = expanded
+        .iter()
+        .map(|p| WorkflowPlanEntry { phase: *p })
+        .collect();
 
     if dry_run {
         println!("todo-workflow plan ({} phase(s)):", plan.len());
         for (idx, entry) in plan.iter().enumerate() {
-            println!(
-                "  {}. {} -> {}",
-                idx + 1,
-                entry.phase.label(),
-                entry.prompt_path.display()
-            );
+            println!("  {}. {} (embedded)", idx + 1, entry.phase.label());
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
@@ -296,8 +289,8 @@ pub fn todo_workflow(
             idx + 1,
             entry.phase.label()
         );
-        let prompt = fs::read_to_string(&entry.prompt_path)?;
-        if let Err(err) = run_agent_interactive(cli, root, &prompt, timeout) {
+        let prompt = entry.phase.prompt_body();
+        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
             eprintln!(
                 "phase {} ({}) failed; resume with --phase {}",
                 idx + 1,
@@ -309,50 +302,6 @@ pub fn todo_workflow(
     }
 
     Ok(plan)
-}
-
-pub fn resolve_prompt_path(
-    root: &Path,
-    prompts_dir: Option<&Path>,
-    phase: Phase,
-) -> Result<PathBuf, AgentsError> {
-    let filename = phase.prompt_filename();
-    let mut searched: Vec<PathBuf> = Vec::new();
-
-    let try_dir = |dir: PathBuf, searched: &mut Vec<PathBuf>| -> Option<PathBuf> {
-        let candidate = dir.join(filename);
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            searched.push(dir);
-            None
-        }
-    };
-
-    if let Some(explicit) = prompts_dir {
-        if let Some(found) = try_dir(explicit.to_path_buf(), &mut searched) {
-            return Ok(found);
-        }
-    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR") {
-        if let Some(found) = try_dir(PathBuf::from(from_env), &mut searched) {
-            return Ok(found);
-        }
-    } else {
-        let default_dir = root.join("prompts").join("todo-workflow");
-        if let Some(found) = try_dir(default_dir, &mut searched) {
-            return Ok(found);
-        }
-    }
-
-    let dirs_rendered = searched
-        .iter()
-        .map(|d| d.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(AgentsError::Io(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("missing prompt file {filename} (searched: {dirs_rendered})"),
-    )))
 }
 
 pub fn workflow_timeout() -> Option<Duration> {
@@ -856,8 +805,7 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         AgentCli, Phase, TARGETS, add_status_comment, build_commit_prompt, build_status_comment,
-        doc, parse_codex_json_line, parse_stream_json_line, resolve_prompt_path, todo_workflow,
-        workflow_timeout,
+        doc, parse_codex_json_line, parse_stream_json_line, todo_workflow, workflow_timeout,
     };
     use std::sync::Mutex;
     use std::time::Duration;
@@ -957,78 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prompt_path_prefers_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempdir().unwrap();
-        let env_dir = tempdir().unwrap();
-        let default_dir = root.path().join("prompts").join("todo-workflow");
-        fs::create_dir_all(&default_dir).unwrap();
-        fs::write(default_dir.join("prompt_01.md"), "default").unwrap();
-        fs::write(env_dir.path().join("prompt_01.md"), "from-env").unwrap();
-
-        // Safety: tests that touch env vars serialize via ENV_LOCK.
-        unsafe {
-            std::env::set_var("AGENTS_PROMPTS_DIR", env_dir.path());
-        }
-        let resolved = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap();
-        assert_eq!(fs::read_to_string(&resolved).unwrap(), "from-env");
-
-        unsafe {
-            std::env::remove_var("AGENTS_PROMPTS_DIR");
-        }
-        let resolved = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap();
-        assert_eq!(fs::read_to_string(&resolved).unwrap(), "default");
-    }
-
-    #[test]
-    fn resolve_prompt_path_errors_when_missing() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::remove_var("AGENTS_PROMPTS_DIR");
-        }
-        let root = tempdir().unwrap();
-        let err = resolve_prompt_path(root.path(), None, Phase::Implement).unwrap_err();
-        let rendered = err.to_string();
-        assert!(rendered.contains("prompt_02.md"), "msg was: {rendered}");
-        assert!(
-            rendered.contains("prompts/todo-workflow") || rendered.contains("prompts"),
-            "msg was: {rendered}"
-        );
-    }
-
-    #[test]
-    fn resolve_prompt_path_errors_when_env_dir_missing_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let root = tempdir().unwrap();
-        let env_dir = tempdir().unwrap();
-        // Populate the default dir to prove the env var path is authoritative:
-        // if env var is set and its file is missing, we must NOT fall back.
-        let default_dir = root.path().join("prompts").join("todo-workflow");
-        fs::create_dir_all(&default_dir).unwrap();
-        fs::write(default_dir.join("prompt_01.md"), "default").unwrap();
-
-        // Safety: tests that touch env vars serialize via ENV_LOCK.
-        unsafe {
-            std::env::set_var("AGENTS_PROMPTS_DIR", env_dir.path());
-        }
-        let err = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap_err();
-        let rendered = err.to_string();
-        unsafe {
-            std::env::remove_var("AGENTS_PROMPTS_DIR");
-        }
-
-        assert!(rendered.contains("prompt_01.md"), "msg was: {rendered}");
-        assert!(
-            rendered.contains(&env_dir.path().display().to_string()),
-            "msg was: {rendered}"
-        );
-        assert!(
-            !rendered.contains("prompts/todo-workflow"),
-            "should not have searched default dir; msg was: {rendered}"
-        );
-    }
-
-    #[test]
     fn workflow_timeout_reads_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
@@ -1053,22 +929,10 @@ mod tests {
 
     #[test]
     fn dry_run_plan_lists_phases_in_order() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::remove_var("AGENTS_PROMPTS_DIR");
-        }
         let root = tempdir().unwrap();
-        let dir = root.path().join("prompts").join("todo-workflow");
-        fs::create_dir_all(&dir).unwrap();
-        for name in ["prompt_01.md", "prompt_02.md", "prompt_03.md"] {
-            fs::write(dir.join(name), name).unwrap();
-        }
-        let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, None, true).unwrap();
+        let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, true).unwrap();
         let phases: Vec<_> = plan.iter().map(|e| e.phase).collect();
         assert_eq!(phases, vec![Phase::Plan, Phase::Implement, Phase::Land]);
-        assert!(plan[0].prompt_path.ends_with("prompt_01.md"));
-        assert!(plan[1].prompt_path.ends_with("prompt_02.md"));
-        assert!(plan[2].prompt_path.ends_with("prompt_03.md"));
     }
 
     #[test]
