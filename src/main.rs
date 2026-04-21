@@ -98,7 +98,7 @@ fn main() {
             if let Err(err) = agents::todo_workflow(
                 &root,
                 cli,
-                &[phase],
+                phase,
                 prompts_dir.as_deref(),
                 dry_run,
             ) {

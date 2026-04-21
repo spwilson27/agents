@@ -253,18 +253,11 @@ pub struct WorkflowPlanEntry {
 pub fn todo_workflow(
     root: &Path,
     cli: AgentCli,
-    phases: &[Phase],
+    phase: Phase,
     prompts_dir: Option<&Path>,
     dry_run: bool,
 ) -> Result<Vec<WorkflowPlanEntry>, AgentsError> {
-    let mut expanded: Vec<Phase> = Vec::new();
-    for phase in phases {
-        for sub in phase.expand() {
-            if !expanded.contains(&sub) {
-                expanded.push(sub);
-            }
-        }
-    }
+    let expanded: Vec<Phase> = phase.expand();
 
     let mut plan: Vec<WorkflowPlanEntry> = Vec::new();
     for phase in &expanded {
@@ -1070,7 +1063,7 @@ mod tests {
         for name in ["prompt_01.md", "prompt_02.md", "prompt_03.md"] {
             fs::write(dir.join(name), name).unwrap();
         }
-        let plan = todo_workflow(root.path(), AgentCli::Claude, &[Phase::All], None, true).unwrap();
+        let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, None, true).unwrap();
         let phases: Vec<_> = plan.iter().map(|e| e.phase).collect();
         assert_eq!(phases, vec![Phase::Plan, Phase::Implement, Phase::Land]);
         assert!(plan[0].prompt_path.ends_with("prompt_01.md"));
