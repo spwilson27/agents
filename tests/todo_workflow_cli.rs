@@ -4,13 +4,14 @@ use std::process::Command;
 
 use tempfile::{TempDir, tempdir};
 
-// Stable substrings from the embedded prompts under prompts/todo-workflow/.
-// Chosen to be unique per phase and unlikely to drift.
-const PHASE_SUBSTRINGS: &[&str] = &[
-    "meta-orchestrator",       // prompt_01.md (plan)
-    "implementation orchestrator", // prompt_02.md (implement)
-    "last-mile",               // prompt_03.md (land)
-];
+// Exact bytes of the embedded prompts under prompts/todo-workflow/.
+// Asserting against these prevents an accidental phase swap in the prompts
+// directory from going undetected.
+const PROMPT_PLAN: &str = include_str!("../prompts/todo-workflow/prompt_01.md");
+const PROMPT_IMPLEMENT: &str = include_str!("../prompts/todo-workflow/prompt_02.md");
+const PROMPT_LAND: &str = include_str!("../prompts/todo-workflow/prompt_03.md");
+
+const PHASE_PROMPTS: &[&str] = &[PROMPT_PLAN, PROMPT_IMPLEMENT, PROMPT_LAND];
 
 struct Fixture {
     root: TempDir,
@@ -86,12 +87,13 @@ fn todo_workflow_runs_three_phases_in_order() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (n, substring) in PHASE_SUBSTRINGS.iter().enumerate() {
+    for (n, expected) in PHASE_PROMPTS.iter().enumerate() {
         let path = fx.record_dir.path().join(format!("phase_{}.txt", n + 1));
         let captured = fs::read_to_string(&path).unwrap();
-        assert!(
-            captured.contains(substring),
-            "phase {} missing substring {substring:?}; got: {captured}",
+        assert_eq!(
+            captured.trim_end(),
+            expected.trim_end(),
+            "phase {} captured stdin did not match embedded prompt",
             n + 1
         );
     }
@@ -134,7 +136,11 @@ fn todo_workflow_single_phase_flag() {
         String::from_utf8_lossy(&output.stderr)
     );
     let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
-    assert!(captured.contains("last-mile"), "got: {captured}");
+    assert_eq!(
+        captured.trim_end(),
+        PROMPT_LAND.trim_end(),
+        "single-phase stdin did not match embedded land prompt"
+    );
     assert!(!fx.record_dir.path().join("phase_2.txt").exists());
 }
 
