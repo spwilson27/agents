@@ -526,7 +526,12 @@ fn run_interactive_command(
     let mut child = command.spawn()?;
 
     if let Some(mut pipe) = child.stdin.take() {
-        pipe.write_all(prompt.as_bytes())?;
+        if let Err(err) = pipe.write_all(prompt.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err.into());
+        }
+        drop(pipe);
     }
 
     let status = if let Some(timeout) = timeout {
@@ -805,7 +810,8 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         AgentCli, Phase, TARGETS, add_status_comment, build_commit_prompt, build_status_comment,
-        doc, parse_codex_json_line, parse_stream_json_line, todo_workflow, workflow_timeout,
+        doc, parse_codex_json_line, parse_stream_json_line, run_agent_interactive, todo_workflow,
+        workflow_timeout,
     };
     use std::sync::Mutex;
     use std::time::Duration;
@@ -944,6 +950,52 @@ mod tests {
         assert_eq!(Phase::Plan.expand(), vec![Phase::Plan]);
         assert_eq!(Phase::Implement.expand(), vec![Phase::Implement]);
         assert_eq!(Phase::Land.expand(), vec![Phase::Land]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_agent_interactive_does_not_hang_when_child_exits_without_reading_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::thread;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let stub = tmp.path().join("stub.sh");
+        fs::write(&stub, "#!/usr/bin/env bash\nexit 1\n").unwrap();
+        let mut perms = fs::metadata(&stub).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&stub, perms).unwrap();
+
+        unsafe {
+            std::env::set_var("AGENTS_CLAUDE_BIN", &stub);
+        }
+
+        // Prompt large enough to overflow a typical pipe buffer (64 KiB on Linux).
+        let prompt = "x".repeat(1024 * 1024);
+        let root = tempdir().unwrap();
+        let root_path = root.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result = run_agent_interactive(
+                AgentCli::Claude,
+                &root_path,
+                &prompt,
+                Some(Duration::from_secs(5)),
+            );
+            let _ = tx.send(result.is_err());
+        });
+
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("run_agent_interactive hung when child exited without consuming stdin");
+        assert!(outcome, "expected an error when child exits 1");
+        handle.join().unwrap();
+
+        unsafe {
+            std::env::remove_var("AGENTS_CLAUDE_BIN");
+        }
     }
 
     #[test]
