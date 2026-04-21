@@ -25,6 +25,41 @@ pub const TARGETS: &[(&str, &str)] = &[
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum Phase {
+    Plan,
+    Implement,
+    Land,
+    All,
+}
+
+impl Phase {
+    pub fn expand(self) -> Vec<Phase> {
+        match self {
+            Self::All => vec![Self::Plan, Self::Implement, Self::Land],
+            single => vec![single],
+        }
+    }
+
+    pub fn prompt_filename(self) -> &'static str {
+        match self {
+            Self::Plan => "prompt_01.md",
+            Self::Implement => "prompt_02.md",
+            Self::Land => "prompt_03.md",
+            Self::All => "",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Implement => "implement",
+            Self::Land => "land",
+            Self::All => "all",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum AgentCli {
     Qwen,
     Gemini,
@@ -619,8 +654,8 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentCli, TARGETS, add_status_comment, build_commit_prompt, build_status_comment, doc,
-        parse_codex_json_line, parse_stream_json_line,
+        AgentCli, Phase, TARGETS, add_status_comment, build_commit_prompt, build_status_comment,
+        doc, parse_codex_json_line, parse_stream_json_line,
     };
     use std::collections::HashSet;
     use std::fs;
@@ -713,6 +748,17 @@ mod tests {
         let parsed =
             parse_stream_json_line(r#"{"type":"result","result":"feat: add commit helper"}"#);
         assert_eq!(parsed.as_deref(), Some("feat: add commit helper"));
+    }
+
+    #[test]
+    fn phase_parses_from_clap() {
+        assert_eq!(
+            Phase::All.expand(),
+            vec![Phase::Plan, Phase::Implement, Phase::Land]
+        );
+        assert_eq!(Phase::Plan.expand(), vec![Phase::Plan]);
+        assert_eq!(Phase::Implement.expand(), vec![Phase::Implement]);
+        assert_eq!(Phase::Land.expand(), vec![Phase::Land]);
     }
 
     #[test]
