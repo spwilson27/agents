@@ -44,7 +44,7 @@ impl Phase {
         }
     }
 
-    pub fn prompt_body(self) -> &'static str {
+    pub(crate) fn prompt_body(self) -> &'static str {
         match self {
             Self::Plan => PROMPT_PLAN,
             Self::Implement => PROMPT_IMPLEMENT,
