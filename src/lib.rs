@@ -343,15 +343,15 @@ pub fn resolve_prompt_path(
         if let Some(found) = try_dir(explicit.to_path_buf(), &mut searched) {
             return Ok(found);
         }
-    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR")
-        && let Some(found) = try_dir(PathBuf::from(from_env), &mut searched)
-    {
-        return Ok(found);
-    }
-
-    let default_dir = root.join("prompts").join("todo-workflow");
-    if let Some(found) = try_dir(default_dir, &mut searched) {
-        return Ok(found);
+    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR") {
+        if let Some(found) = try_dir(PathBuf::from(from_env), &mut searched) {
+            return Ok(found);
+        }
+    } else {
+        let default_dir = root.join("prompts").join("todo-workflow");
+        if let Some(found) = try_dir(default_dir, &mut searched) {
+            return Ok(found);
+        }
     }
 
     let dirs_rendered = searched
@@ -1003,6 +1003,38 @@ mod tests {
         assert!(
             rendered.contains("prompts/todo-workflow") || rendered.contains("prompts"),
             "msg was: {rendered}"
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_path_errors_when_env_dir_missing_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = tempdir().unwrap();
+        let env_dir = tempdir().unwrap();
+        // Populate the default dir to prove the env var path is authoritative:
+        // if env var is set and its file is missing, we must NOT fall back.
+        let default_dir = root.path().join("prompts").join("todo-workflow");
+        fs::create_dir_all(&default_dir).unwrap();
+        fs::write(default_dir.join("prompt_01.md"), "default").unwrap();
+
+        // Safety: tests that touch env vars serialize via ENV_LOCK.
+        unsafe {
+            std::env::set_var("AGENTS_PROMPTS_DIR", env_dir.path());
+        }
+        let err = resolve_prompt_path(root.path(), None, Phase::Plan).unwrap_err();
+        let rendered = err.to_string();
+        unsafe {
+            std::env::remove_var("AGENTS_PROMPTS_DIR");
+        }
+
+        assert!(rendered.contains("prompt_01.md"), "msg was: {rendered}");
+        assert!(
+            rendered.contains(&env_dir.path().display().to_string()),
+            "msg was: {rendered}"
+        );
+        assert!(
+            !rendered.contains("prompts/todo-workflow"),
+            "should not have searched default dir; msg was: {rendered}"
         );
     }
 
