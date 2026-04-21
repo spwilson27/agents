@@ -4,23 +4,18 @@ use std::process::Command;
 
 use tempfile::{TempDir, tempdir};
 
-const PROMPT_BODIES: &[(&str, &str)] = &[
-    ("prompt_01.md", "PLAN-PROMPT-BODY-01"),
-    ("prompt_02.md", "IMPL-PROMPT-BODY-02"),
-    ("prompt_03.md", "LAND-PROMPT-BODY-03"),
+// Stable substrings from the embedded prompts under prompts/todo-workflow/.
+// Chosen to be unique per phase and unlikely to drift.
+const PHASE_SUBSTRINGS: &[&str] = &[
+    "meta-orchestrator",       // prompt_01.md (plan)
+    "implementation orchestrator", // prompt_02.md (implement)
+    "last-mile",               // prompt_03.md (land)
 ];
 
 struct Fixture {
     root: TempDir,
     record_dir: TempDir,
     stub: PathBuf,
-}
-
-fn write_prompts(dir: &Path) {
-    fs::create_dir_all(dir).unwrap();
-    for (name, body) in PROMPT_BODIES {
-        fs::write(dir.join(name), body).unwrap();
-    }
 }
 
 // Writes a shell-script stub at <record_dir>/stub.sh that:
@@ -64,7 +59,6 @@ exit 0
 fn make_fixture(fail_phase: Option<usize>) -> Fixture {
     let root = tempdir().unwrap();
     let record_dir = tempdir().unwrap();
-    write_prompts(&root.path().join("prompts").join("todo-workflow"));
     let stub = make_stub(record_dir.path(), fail_phase);
     Fixture {
         root,
@@ -84,7 +78,6 @@ fn todo_workflow_runs_three_phases_in_order() {
         .args(["todo-workflow", "--cli", "claude", "--root"])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env_remove("AGENTS_PROMPTS_DIR")
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
         .output()
         .unwrap();
@@ -93,12 +86,12 @@ fn todo_workflow_runs_three_phases_in_order() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (n, (_, body)) in PROMPT_BODIES.iter().enumerate() {
+    for (n, substring) in PHASE_SUBSTRINGS.iter().enumerate() {
         let path = fx.record_dir.path().join(format!("phase_{}.txt", n + 1));
         let captured = fs::read_to_string(&path).unwrap();
         assert!(
-            captured.contains(body),
-            "phase {} missing body; got: {captured}",
+            captured.contains(substring),
+            "phase {} missing substring {substring:?}; got: {captured}",
             n + 1
         );
     }
@@ -111,7 +104,6 @@ fn todo_workflow_stops_on_phase_failure() {
         .args(["todo-workflow", "--cli", "claude", "--root"])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env_remove("AGENTS_PROMPTS_DIR")
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
         .output()
         .unwrap();
@@ -133,7 +125,6 @@ fn todo_workflow_single_phase_flag() {
         .args(["todo-workflow", "--cli", "claude", "--phase", "land", "--root"])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env_remove("AGENTS_PROMPTS_DIR")
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
         .output()
         .unwrap();
@@ -143,7 +134,7 @@ fn todo_workflow_single_phase_flag() {
         String::from_utf8_lossy(&output.stderr)
     );
     let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
-    assert!(captured.contains("LAND-PROMPT-BODY-03"));
+    assert!(captured.contains("last-mile"), "got: {captured}");
     assert!(!fx.record_dir.path().join("phase_2.txt").exists());
 }
 
@@ -154,7 +145,6 @@ fn todo_workflow_dry_run_prints_plan_and_skips_agent() {
         .args(["todo-workflow", "--cli", "claude", "--dry-run", "--root"])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env_remove("AGENTS_PROMPTS_DIR")
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
         .output()
         .unwrap();
@@ -163,63 +153,6 @@ fn todo_workflow_dry_run_prints_plan_and_skips_agent() {
     assert!(stdout.contains("plan"));
     assert!(stdout.contains("implement"));
     assert!(stdout.contains("land"));
-    assert!(stdout.contains("prompt_01.md"));
-    assert!(stdout.contains("prompt_02.md"));
-    assert!(stdout.contains("prompt_03.md"));
+    assert!(stdout.contains("(embedded)"));
     assert!(!fx.record_dir.path().join("phase_1.txt").exists());
-}
-
-#[test]
-fn todo_workflow_missing_prompt_errors_cleanly() {
-    let fx = make_fixture(None);
-    fs::remove_file(
-        fx.root
-            .path()
-            .join("prompts")
-            .join("todo-workflow")
-            .join("prompt_02.md"),
-    )
-    .unwrap();
-    let output = bin()
-        .args(["todo-workflow", "--cli", "claude", "--root"])
-        .arg(fx.root.path())
-        .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env_remove("AGENTS_PROMPTS_DIR")
-        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("prompt_02.md"), "stderr was: {stderr}");
-    assert!(!fx.record_dir.path().join("phase_1.txt").exists());
-}
-
-#[test]
-fn todo_workflow_respects_prompts_dir_env() {
-    let fx = make_fixture(None);
-    let alt = tempdir().unwrap();
-    write_prompts(alt.path());
-    fs::write(alt.path().join("prompt_01.md"), "ALT-PLAN-BODY").unwrap();
-    let output = bin()
-        .args([
-            "todo-workflow",
-            "--cli",
-            "claude",
-            "--phase",
-            "plan",
-            "--root",
-        ])
-        .arg(fx.root.path())
-        .env("AGENTS_CLAUDE_BIN", &fx.stub)
-        .env("AGENTS_PROMPTS_DIR", alt.path())
-        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
-    assert!(captured.contains("ALT-PLAN-BODY"), "got: {captured}");
 }
