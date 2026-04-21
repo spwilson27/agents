@@ -253,7 +253,7 @@ pub fn resolve_prompt_path(
     let filename = phase.prompt_filename();
     let mut searched: Vec<PathBuf> = Vec::new();
 
-    let mut try_dir = |dir: PathBuf, searched: &mut Vec<PathBuf>| -> Option<PathBuf> {
+    let try_dir = |dir: PathBuf, searched: &mut Vec<PathBuf>| -> Option<PathBuf> {
         let candidate = dir.join(filename);
         if candidate.is_file() {
             Some(candidate)
@@ -456,6 +456,89 @@ fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsE
             parse_stream_json_line,
         ),
         AgentCli::Codex => run_codex_command(root, prompt),
+    }
+}
+
+pub fn run_agent_interactive(
+    cli: AgentCli,
+    root: &Path,
+    prompt: &str,
+    timeout: Option<Duration>,
+) -> Result<(), AgentsError> {
+    let mut command = match cli {
+        AgentCli::Gemini => {
+            let mut c = cli.command();
+            c.current_dir(root).arg("-y");
+            c
+        }
+        AgentCli::Claude => {
+            let mut c = cli.command();
+            c.current_dir(root)
+                .args(["-p", "--dangerously-skip-permissions"]);
+            c
+        }
+        AgentCli::Qwen => {
+            let mut c = cli.command();
+            c.current_dir(root).arg("-y");
+            c
+        }
+        AgentCli::Codex => {
+            let mut c = cli.command();
+            c.current_dir(root)
+                .arg("exec")
+                .arg("--skip-git-repo-check")
+                .arg("--color")
+                .arg("never")
+                .arg("-C")
+                .arg(root)
+                .arg("-");
+            c
+        }
+    };
+
+    run_interactive_command(&mut command, prompt, timeout)
+}
+
+fn run_interactive_command(
+    command: &mut Command,
+    prompt: &str,
+    timeout: Option<Duration>,
+) -> Result<(), AgentsError> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut child = command.spawn()?;
+
+    if let Some(mut pipe) = child.stdin.take() {
+        pipe.write_all(prompt.as_bytes())?;
+    }
+
+    let status = if let Some(timeout) = timeout {
+        match child.wait_timeout(timeout)? {
+            Some(status) => status,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AgentsError::TimedOut {
+                    program: command.get_program().to_string_lossy().into_owned(),
+                    timeout,
+                });
+            }
+        }
+    } else {
+        child.wait()?
+    };
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AgentsError::CommandFailed {
+            program: command.get_program().to_string_lossy().into_owned(),
+            status,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
     }
 }
 
