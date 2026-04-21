@@ -1,5 +1,15 @@
 # `agents todo-workflow` — Implementation & Verification Plan
 
+## Revision
+
+2026-04-21 — The decision to load prompt files from disk at runtime was
+reversed. Prompts are now embedded into the binary at build time via
+`include_str!`, and the `--prompts-dir` flag plus `AGENTS_PROMPTS_DIR`
+environment variable have been removed. The source of truth for the
+prompts remains `prompts/todo-workflow/prompt_0{1,2,3}.md`; edits to
+those files require a rebuild. The original design discussion below is
+preserved unchanged.
+
 ## Goal
 
 Add a `todo-workflow` subcommand to the `agents` CLI that runs the three-phase
