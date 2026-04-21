@@ -29,6 +29,46 @@ Reads `git diff --cached`, asks the selected agent CLI for a commit message draf
 
 
 
+### todo-workflow
+
+Runs a three-phase orchestration (plan, implement, land) using an agent CLI.
+Each phase is a separate agent invocation driven by a prompt file on disk.
+
+Examples:
+
+```
+cargo run -- todo-workflow --dry-run
+cargo run -- todo-workflow --cli claude
+cargo run -- todo-workflow --cli claude --phase plan
+cargo run -- todo-workflow --phase implement --prompts-dir /path/to/prompts
+```
+
+Flags:
+
+- `--cli` selects the agent CLI. Default `claude`. `codex` is discouraged
+  because its `exec` is one-shot and ill-suited to long orchestration.
+- `--phase` selects which phase(s) to run: `plan`, `implement`, `land`, or
+  `all` (default). `all` expands to `plan`, `implement`, `land` in order.
+- `--root` repository root (default `.`).
+- `--prompts-dir` overrides the prompt directory lookup.
+- `--dry-run` prints the resolved plan and exits without invoking the agent.
+
+Environment variables:
+
+- `AGENTS_WORKFLOW_TIMEOUT_SECS` — per-phase timeout in seconds. Unset (or
+  `0`) means no timeout, which is the default: the orchestration can run for
+  hours. The `commit` subcommand's 30-second timeout is unaffected.
+- `AGENTS_PROMPTS_DIR` — directory that holds `prompt_0{1,2,3}.md`. If
+  unset, the CLI looks in `<root>/prompts/todo-workflow`.
+- `AGENTS_<CLI>_BIN` (e.g. `AGENTS_CLAUDE_BIN`) — overrides the binary used
+  for that agent CLI, same as for `commit`.
+
+The per-phase behavior is defined by the prompt files, which are the source
+of truth: `prompts/todo-workflow/prompt_01.md` (plan),
+`prompts/todo-workflow/prompt_02.md` (implement),
+`prompts/todo-workflow/prompt_03.md` (land). Edit those to change behavior;
+no rebuild is required.
+
 ### TODOs
 
 - mcp add/delete - Enable an mcp tool either globally or for the specific

@@ -343,10 +343,10 @@ pub fn resolve_prompt_path(
         if let Some(found) = try_dir(explicit.to_path_buf(), &mut searched) {
             return Ok(found);
         }
-    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR") {
-        if let Some(found) = try_dir(PathBuf::from(from_env), &mut searched) {
-            return Ok(found);
-        }
+    } else if let Some(from_env) = env::var_os("AGENTS_PROMPTS_DIR")
+        && let Some(found) = try_dir(PathBuf::from(from_env), &mut searched)
+    {
+        return Ok(found);
     }
 
     let default_dir = root.join("prompts").join("todo-workflow");
