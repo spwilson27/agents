@@ -112,7 +112,11 @@ fn todo_workflow_stops_on_phase_failure() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("phase 2") || stderr.contains("implement"),
+        stderr.contains("phase 2 (implement) failed"),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        stderr.contains("resume with --phase implement"),
         "stderr was: {stderr}"
     );
     assert!(fx.record_dir.path().join("phase_1.txt").is_file());
