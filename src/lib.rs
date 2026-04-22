@@ -357,6 +357,14 @@ pub fn todo_workflow(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!(
+                "\n--- prompt {} ({}) ---\n{}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.prompt_body()
+            );
+        }
         return Ok(plan);
     }
 
@@ -412,6 +420,14 @@ pub fn pipeclean(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!(
+                "\n--- prompt {} ({}) ---\n{}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.prompt_body()
+            );
+        }
         return Ok(plan);
     }
 
@@ -467,6 +483,14 @@ pub fn bug_bash(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!(
+                "\n--- prompt {} ({}) ---\n{}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.prompt_body()
+            );
+        }
         return Ok(plan);
     }
 
