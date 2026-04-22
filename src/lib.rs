@@ -31,6 +31,11 @@ const PROMPT_LAND: &str = include_str!("../prompts/todo-workflow/prompt_03.md");
 const PROMPT_PIPECLEAN_FIX: &str = include_str!("../prompts/pipeclean/prompt_01.md");
 const PROMPT_PIPECLEAN_REVIEW: &str = include_str!("../prompts/pipeclean/prompt_02.md");
 
+const BUG_BASH_HUNT: &str = include_str!("../prompts/bug-bash/prompt_01.md");
+const BUG_BASH_REPRODUCE: &str = include_str!("../prompts/bug-bash/prompt_02.md");
+const BUG_BASH_FIX: &str = include_str!("../prompts/bug-bash/prompt_03.md");
+const BUG_BASH_LAND: &str = include_str!("../prompts/bug-bash/prompt_04.md");
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Phase {
     Plan,
@@ -93,6 +98,44 @@ impl PipeCleanPhase {
         match self {
             Self::Fix => "fix",
             Self::Review => "review",
+            Self::All => "all",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum BugBashPhase {
+    Hunt,
+    Reproduce,
+    Fix,
+    Land,
+    All,
+}
+
+impl BugBashPhase {
+    pub fn expand(self) -> Vec<BugBashPhase> {
+        match self {
+            Self::All => vec![Self::Hunt, Self::Reproduce, Self::Fix, Self::Land],
+            single => vec![single],
+        }
+    }
+
+    pub(crate) fn prompt_body(self) -> &'static str {
+        match self {
+            Self::Hunt => BUG_BASH_HUNT,
+            Self::Reproduce => BUG_BASH_REPRODUCE,
+            Self::Fix => BUG_BASH_FIX,
+            Self::Land => BUG_BASH_LAND,
+            Self::All => unreachable!("BugBashPhase::All must be expanded before prompt lookup"),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hunt => "hunt",
+            Self::Reproduce => "reproduce",
+            Self::Fix => "fix",
+            Self::Land => "land",
             Self::All => "all",
         }
     }
@@ -379,6 +422,57 @@ pub fn pipeclean(
             idx + 1,
             entry.phase.label()
         );
+        let prompt = entry.phase.prompt_body();
+        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
+            eprintln!(
+                "phase {} ({}) failed; resume with --phase {}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.label()
+            );
+            return Err(err);
+        }
+    }
+
+    Ok(plan)
+}
+
+pub struct BugBashPlanEntry {
+    pub phase: BugBashPhase,
+}
+
+pub fn bug_bash(
+    root: &Path,
+    cli: AgentCli,
+    phase: BugBashPhase,
+    dry_run: bool,
+) -> Result<Vec<BugBashPlanEntry>, AgentsError> {
+    let expanded: Vec<BugBashPhase> = phase.expand();
+
+    let plan: Vec<BugBashPlanEntry> = expanded
+        .iter()
+        .map(|p| BugBashPlanEntry { phase: *p })
+        .collect();
+
+    if matches!(cli, AgentCli::Codex) {
+        eprintln!(
+            "warning: --cli codex uses one-shot exec; claude is recommended for bug-bash"
+        );
+    }
+
+    if dry_run {
+        println!("bug-bash plan ({} phase(s)):", plan.len());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!("  {}. {} (embedded)", idx + 1, entry.phase.label());
+        }
+        println!("cli: {}", cli.binary_name());
+        println!("root: {}", root.display());
+        return Ok(plan);
+    }
+
+    let timeout = workflow_timeout();
+    for (idx, entry) in plan.iter().enumerate() {
+        eprintln!("=== Phase {}: {} ===", idx + 1, entry.phase.label());
         let prompt = entry.phase.prompt_body();
         if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
             eprintln!(

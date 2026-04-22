@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
-use agents::{AgentCli, Phase, PipeCleanPhase};
+use agents::{AgentCli, BugBashPhase, Phase, PipeCleanPhase};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -82,6 +82,29 @@ enum Command {
         #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
         dry_run: bool,
     },
+    #[command(
+        about = "Run the four-phase bug-bash orchestration (hunt, reproduce, fix, land)."
+    )]
+    BugBash {
+        #[arg(
+            long,
+            default_value = "claude",
+            value_enum,
+            help = "Agent CLI to drive the orchestration."
+        )]
+        cli: AgentCli,
+        #[arg(long, default_value = ".", help = "Repository root directory.")]
+        root: PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "all",
+            help = "Which phase(s) to run."
+        )]
+        phase: BugBashPhase,
+        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -124,6 +147,17 @@ fn main() {
             dry_run,
         }) => {
             if let Err(err) = agents::pipeclean(&root, cli, phase, dry_run) {
+                eprintln!("{err}");
+                process::exit(1);
+            }
+        }
+        Some(Command::BugBash {
+            cli,
+            root,
+            phase,
+            dry_run,
+        }) => {
+            if let Err(err) = agents::bug_bash(&root, cli, phase, dry_run) {
                 eprintln!("{err}");
                 process::exit(1);
             }
