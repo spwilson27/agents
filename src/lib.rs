@@ -28,6 +28,9 @@ const PROMPT_PLAN: &str = include_str!("../prompts/todo-workflow/prompt_01.md");
 const PROMPT_IMPLEMENT: &str = include_str!("../prompts/todo-workflow/prompt_02.md");
 const PROMPT_LAND: &str = include_str!("../prompts/todo-workflow/prompt_03.md");
 
+const PROMPT_PIPECLEAN_FIX: &str = include_str!("../prompts/pipeclean/prompt_01.md");
+const PROMPT_PIPECLEAN_REVIEW: &str = include_str!("../prompts/pipeclean/prompt_02.md");
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Phase {
     Plan,
@@ -58,6 +61,38 @@ impl Phase {
             Self::Plan => "plan",
             Self::Implement => "implement",
             Self::Land => "land",
+            Self::All => "all",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PipeCleanPhase {
+    Fix,
+    Review,
+    All,
+}
+
+impl PipeCleanPhase {
+    pub fn expand(self) -> Vec<PipeCleanPhase> {
+        match self {
+            Self::All => vec![Self::Fix, Self::Review],
+            single => vec![single],
+        }
+    }
+
+    pub(crate) fn prompt_body(self) -> &'static str {
+        match self {
+            Self::Fix => PROMPT_PIPECLEAN_FIX,
+            Self::Review => PROMPT_PIPECLEAN_REVIEW,
+            Self::All => unreachable!("PipeCleanPhase::All must be expanded before prompt lookup"),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fix => "fix",
+            Self::Review => "review",
             Self::All => "all",
         }
     }
@@ -274,6 +309,61 @@ pub fn todo_workflow(
 
     if dry_run {
         println!("todo-workflow plan ({} phase(s)):", plan.len());
+        for (idx, entry) in plan.iter().enumerate() {
+            println!("  {}. {} (embedded)", idx + 1, entry.phase.label());
+        }
+        println!("cli: {}", cli.binary_name());
+        println!("root: {}", root.display());
+        return Ok(plan);
+    }
+
+    let timeout = workflow_timeout();
+    for (idx, entry) in plan.iter().enumerate() {
+        eprintln!(
+            "=== Phase {}: {} ===",
+            idx + 1,
+            entry.phase.label()
+        );
+        let prompt = entry.phase.prompt_body();
+        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
+            eprintln!(
+                "phase {} ({}) failed; resume with --phase {}",
+                idx + 1,
+                entry.phase.label(),
+                entry.phase.label()
+            );
+            return Err(err);
+        }
+    }
+
+    Ok(plan)
+}
+
+pub struct PipeCleanPlanEntry {
+    pub phase: PipeCleanPhase,
+}
+
+pub fn pipeclean(
+    root: &Path,
+    cli: AgentCli,
+    phase: PipeCleanPhase,
+    dry_run: bool,
+) -> Result<Vec<PipeCleanPlanEntry>, AgentsError> {
+    let expanded: Vec<PipeCleanPhase> = phase.expand();
+
+    let plan: Vec<PipeCleanPlanEntry> = expanded
+        .iter()
+        .map(|p| PipeCleanPlanEntry { phase: *p })
+        .collect();
+
+    if matches!(cli, AgentCli::Codex) {
+        eprintln!(
+            "warning: --cli codex uses one-shot exec; claude is recommended for pipeclean"
+        );
+    }
+
+    if dry_run {
+        println!("pipeclean plan ({} phase(s)):", plan.len());
         for (idx, entry) in plan.iter().enumerate() {
             println!("  {}. {} (embedded)", idx + 1, entry.phase.label());
         }
