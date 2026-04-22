@@ -53,7 +53,13 @@ Keep docs/plan/meta-plan/run-log.md as the append-only execution ledger
 
 1. Compute ready set: tasks whose deps are DONE, unclaimed, unblocked.
 2. For each ready task, spawn a subagent (Agent tool, isolation: "worktree")
-   with a self-contained brief. Prompt best practices:
+   with a self-contained brief. **One task per subagent, always.** Never
+   bundle multiple task_NNN.md files into a single dispatch, even if they
+   look small, adjacent, or trivially related — bundled briefs cause
+   subagents to skim, miss acceptance criteria, and silently drop
+   sub-items. If two tasks genuinely must land together, that is a
+   planning bug: merge them into one task file first, then dispatch.
+   Prompt best practices:
    - State the goal and why it matters in one paragraph; don't just link the
      task file, summarize it inline.
    - Hard requirements, explicit:
@@ -108,10 +114,34 @@ Phase 3 — Closeout
 When all non-deferred epics are DONE:
 1. Run the cross-cutting verification from plan.md end-to-end on the
    feature branch.
-2. Spawn a thorough final review subagent. Brief: compare plan.md's
-   original scope against what landed on the feature branch; flag any
-   unaddressed plan items, missing tests, or design-doc commitments that
-   weren't fulfilled.
+2. Fan out final review across parallel subagents — a single reviewer
+   cannot hold the whole plan in context without skimming. Dispatch in
+   one message, multiple Agent calls:
+   - **One reviewer per epic**: brief each with the epic doc, its
+     design doc(s), its task_NNN.md files, and the merged diff range
+     for that epic. They must verify every task's acceptance criteria
+     landed, every design-doc commitment is implemented (not stubbed,
+     not `todo!()`/`unimplemented!()`, no TODO/FIXME added by workers,
+     no empty bodies, no skipped tests), and every validation command
+     actually passes on the feature branch. Require file:line
+     citations for each claim of completeness.
+   - **One plan-level reviewer**: brief with plan.md and the full
+     list of epics. Verifies scope coverage — every in-scope TODO
+     item from plan.md maps to a landed epic, every cross-cutting
+     test/verification strategy in plan.md has evidence on the
+     feature branch, nothing silently dropped.
+   - **One stub-hunter reviewer**: brief with the full feature-branch
+     diff range. Greps for and reads context around `todo!`,
+     `unimplemented!`, `panic!("not yet")`, `TODO`, `FIXME`, `XXX`,
+     empty function bodies, `#[ignore]`, `skip`, placeholder returns,
+     and mock-but-not-real implementations. Reports each finding with
+     file:line and whether it is pre-existing or introduced by this
+     run.
+   - **One test-evidence reviewer**: brief with plan.md's testing
+     strategy and the run-log. Verifies unit/regression/e2e/platform
+     checks specified by design docs actually ran and passed, not
+     just that code compiles.
+   Aggregate all reviewer findings before proceeding to step 3.
 3. If the review finds gaps: create a follow-up plan under
    docs/plan/meta-plan/followup.md, add the gap items to your TaskCreate
    list and to TODO.md/TODO_INDEX.md, and resume Phase 1 until the

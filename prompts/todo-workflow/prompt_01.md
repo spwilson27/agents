@@ -21,6 +21,9 @@ Remove the existing docs/plan/meta-plan directory if it exists. Write docs/plan/
 Phase 2 — Design docs (where needed)
 
 For TODO items whose implementation approach isn't already pinned down:
+
+**Parallelize.** Drafting all required design docs sequentially in one invocation is not viable and is the common failure mode for this phase. You MUST fan out: spawn one drafting subagent per design doc, running in parallel (single message, multiple tool calls). Then spawn one reviewer subagent per doc, also in parallel. Then you (the orchestrator) incorporate review feedback. Do not draft more than one doc yourself serially — if you find yourself doing that, stop and fan out instead. Budget for design-doc drafting is the parallel subagents, not your own context window.
+
 1. Author docs/features/<feature>.md, grounded in the current source tree
    (cite file paths + line numbers). Every assumption in the doc must be
    vetted against the current code before it is written — if you cannot
@@ -94,6 +97,8 @@ Stop points
 After finishing Phases 0–2 (ground + overarching plan + reviewed design docs),
 consult an opus subagent to review open decisions. Select the best options and
 then proceed to breakdown epics and tasks.
+
+**You are expected to complete Phases 0–4 in this single invocation.** Stopping after Phase 1 with a "this is too big, continue in a follow-on run" handoff is not acceptable — the orchestrator pattern for this phase is parallel subagents, not serial self-drafting. If volume feels infeasible, that is a signal to fan out harder (more parallel subagents per doc / per epic / per task batch), not to stop. Phases 3 and 4 are likewise parallelizable: spawn one subagent per epic for Phase 3, and batch task-file generation across parallel subagents for Phase 4.
 
 Rules
 
