@@ -83,6 +83,22 @@ enum Command {
         dry_run: bool,
     },
     #[command(
+        about = "Run the final-review workflow (bookkeeping, rebase, presubmit, PR, two review passes)."
+    )]
+    FinalReview {
+        #[arg(
+            long,
+            default_value = "claude",
+            value_enum,
+            help = "Agent CLI to drive the orchestration."
+        )]
+        cli: AgentCli,
+        #[arg(long, default_value = ".", help = "Repository root directory.")]
+        root: PathBuf,
+        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        dry_run: bool,
+    },
+    #[command(
         about = "Run the four-phase bug-bash orchestration (hunt, reproduce, fix, land)."
     )]
     BugBash {
@@ -147,6 +163,12 @@ fn main() {
             dry_run,
         }) => {
             if let Err(err) = agents::pipeclean(&root, cli, phase, dry_run) {
+                eprintln!("{err}");
+                process::exit(1);
+            }
+        }
+        Some(Command::FinalReview { cli, root, dry_run }) => {
+            if let Err(err) = agents::final_review(&root, cli, dry_run) {
                 eprintln!("{err}");
                 process::exit(1);
             }

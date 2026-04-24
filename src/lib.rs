@@ -27,9 +27,12 @@ pub const TARGETS: &[(&str, &str)] = &[
 const PROMPT_PLAN: &str = include_str!("../prompts/todo-workflow/prompt_01.md");
 const PROMPT_IMPLEMENT: &str = include_str!("../prompts/todo-workflow/prompt_02.md");
 const PROMPT_LAND: &str = include_str!("../prompts/todo-workflow/prompt_03.md");
+const PROMPT_REVIEW: &str = include_str!("../prompts/todo-workflow/prompt_04.md");
 
 const PROMPT_PIPECLEAN_FIX: &str = include_str!("../prompts/pipeclean/prompt_01.md");
 const PROMPT_PIPECLEAN_REVIEW: &str = include_str!("../prompts/pipeclean/prompt_02.md");
+
+const FINAL_REVIEW_PROMPT: &str = include_str!("../prompts/final_review.md");
 
 const BUG_BASH_HUNT: &str = include_str!("../prompts/bug-bash/prompt_01.md");
 const BUG_BASH_REPRODUCE: &str = include_str!("../prompts/bug-bash/prompt_02.md");
@@ -41,13 +44,14 @@ pub enum Phase {
     Plan,
     Implement,
     Land,
+    Review,
     All,
 }
 
 impl Phase {
     pub fn expand(self) -> Vec<Phase> {
         match self {
-            Self::All => vec![Self::Plan, Self::Implement, Self::Land],
+            Self::All => vec![Self::Plan, Self::Implement, Self::Land, Self::Review],
             single => vec![single],
         }
     }
@@ -57,6 +61,7 @@ impl Phase {
             Self::Plan => PROMPT_PLAN,
             Self::Implement => PROMPT_IMPLEMENT,
             Self::Land => PROMPT_LAND,
+            Self::Review => PROMPT_REVIEW,
             Self::All => unreachable!("Phase::All must be expanded before prompt lookup"),
         }
     }
@@ -66,6 +71,7 @@ impl Phase {
             Self::Plan => "plan",
             Self::Implement => "implement",
             Self::Land => "land",
+            Self::Review => "review",
             Self::All => "all",
         }
     }
@@ -451,6 +457,31 @@ pub fn pipeclean(
     }
 
     Ok(plan)
+}
+
+pub fn final_review(
+    root: &Path,
+    cli: AgentCli,
+    dry_run: bool,
+) -> Result<(), AgentsError> {
+    if matches!(cli, AgentCli::Codex) {
+        eprintln!(
+            "warning: --cli codex uses one-shot exec; claude is recommended for final-review"
+        );
+    }
+
+    if dry_run {
+        println!("final-review plan (1 phase):");
+        println!("  1. final-review (embedded)");
+        println!("cli: {}", cli.binary_name());
+        println!("root: {}", root.display());
+        println!("\n--- prompt 1 (final-review) ---\n{FINAL_REVIEW_PROMPT}");
+        return Ok(());
+    }
+
+    let timeout = workflow_timeout();
+    eprintln!("=== Phase 1: final-review ===");
+    run_agent_interactive(cli, root, FINAL_REVIEW_PROMPT, timeout)
 }
 
 pub struct BugBashPlanEntry {
@@ -1183,14 +1214,14 @@ mod tests {
         let root = tempdir().unwrap();
         let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, true).unwrap();
         let phases: Vec<_> = plan.iter().map(|e| e.phase).collect();
-        assert_eq!(phases, vec![Phase::Plan, Phase::Implement, Phase::Land]);
+        assert_eq!(phases, vec![Phase::Plan, Phase::Implement, Phase::Land, Phase::Review]);
     }
 
     #[test]
     fn phase_parses_from_clap() {
         assert_eq!(
             Phase::All.expand(),
-            vec![Phase::Plan, Phase::Implement, Phase::Land]
+            vec![Phase::Plan, Phase::Implement, Phase::Land, Phase::Review]
         );
         assert_eq!(Phase::Plan.expand(), vec![Phase::Plan]);
         assert_eq!(Phase::Implement.expand(), vec![Phase::Implement]);
