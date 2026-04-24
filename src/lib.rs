@@ -688,22 +688,23 @@ pub fn run_agent_interactive(
     prompt: &str,
     timeout: Option<Duration>,
 ) -> Result<(), AgentsError> {
-    let mut command = match cli {
-        AgentCli::Gemini => {
-            let mut c = cli.command();
-            c.current_dir(root).arg("-y");
-            c
-        }
+    match cli {
         AgentCli::Claude => {
             let mut c = cli.command();
             c.current_dir(root)
-                .args(["-p", "--dangerously-skip-permissions"]);
-            c
+                .arg("--dangerously-skip-permissions")
+                .arg(prompt);
+            run_interactive_tty_command(&mut c, timeout)
+        }
+        AgentCli::Gemini => {
+            let mut c = cli.command();
+            c.current_dir(root).arg("-y");
+            run_interactive_command(&mut c, prompt, timeout)
         }
         AgentCli::Qwen => {
             let mut c = cli.command();
             c.current_dir(root).arg("-y");
-            c
+            run_interactive_command(&mut c, prompt, timeout)
         }
         AgentCli::Codex => {
             let mut c = cli.command();
@@ -715,11 +716,47 @@ pub fn run_agent_interactive(
                 .arg("-C")
                 .arg(root)
                 .arg("-");
-            c
+            run_interactive_command(&mut c, prompt, timeout)
         }
+    }
+}
+
+fn run_interactive_tty_command(
+    command: &mut Command,
+    timeout: Option<Duration>,
+) -> Result<(), AgentsError> {
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut child = command.spawn()?;
+
+    let status = if let Some(timeout) = timeout {
+        match child.wait_timeout(timeout)? {
+            Some(status) => status,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AgentsError::TimedOut {
+                    program: command.get_program().to_string_lossy().into_owned(),
+                    timeout,
+                });
+            }
+        }
+    } else {
+        child.wait()?
     };
 
-    run_interactive_command(&mut command, prompt, timeout)
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AgentsError::CommandFailed {
+            program: command.get_program().to_string_lossy().into_owned(),
+            status,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
 }
 
 fn run_interactive_command(
