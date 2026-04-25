@@ -16,6 +16,7 @@ use wait_timeout::ChildExt;
 
 pub const SOURCE_FILE: &str = ".agents/AGENT.md";
 const DEFAULT_AGENT_TIMEOUT: Duration = Duration::from_secs(30);
+const PROMPTS_DIR: &str = "~/.config/agents/prompts";
 pub const TARGETS: &[(&str, &str)] = &[
     ("claude", "CLAUDE.md"),
     ("codex", "AGENTS.md"),
@@ -287,6 +288,128 @@ pub fn doc(root: &Path) -> Result<Vec<PathBuf>, io::Error> {
     }
 
     Ok(written)
+}
+
+pub fn save_prompt(
+    file: &Path,
+    name: Option<&str>,
+    force: bool,
+) -> Result<(), Box<dyn StdError>> {
+    // Read the source file
+    let content = fs::read_to_string(file).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("error: cannot read file '{}': {}", file.display(), e),
+        )
+    })?;
+
+    // Determine the prompt name
+    let prompt_name = name
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            file.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("prompt")
+                .to_string()
+        });
+
+    // Expand the prompts directory path
+    let prompts_dir = expand_home(PROMPTS_DIR)?;
+    
+    // Create the prompts directory if it doesn't exist
+    fs::create_dir_all(&prompts_dir)?;
+
+    let dest_path = prompts_dir.join(format!("{prompt_name}.md"));
+
+    // Check if file exists and handle confirmation
+    if dest_path.exists() && !force {
+        eprint!("Prompt '{}' already exists. Overwrite? [y/N]: ", prompt_name);
+        io::stderr().flush()?;
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        
+        if !input.trim().eq_ignore_ascii_case("y") {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "operation cancelled by user".to_string(),
+            ).into());
+        }
+    }
+
+    // Write the prompt file
+    fs::write(&dest_path, &content)?;
+    println!("Saved prompt '{}' to {}", prompt_name, dest_path.display());
+
+    Ok(())
+}
+
+pub fn prompt(name: Option<&str>, list: bool) -> Result<(), Box<dyn StdError>> {
+    let prompts_dir = expand_home(PROMPTS_DIR)?;
+
+    if list {
+        // List all available prompts
+        if !prompts_dir.exists() {
+            println!("No prompts saved yet.");
+            return Ok(());
+        }
+
+        let mut prompts: Vec<_> = fs::read_dir(&prompts_dir)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry.path().extension().map_or(false, |ext| ext == "md")
+            })
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        
+        prompts.sort();
+
+        if prompts.is_empty() {
+            println!("No prompts saved yet.");
+        } else {
+            for prompt_name in prompts {
+                println!("{}", prompt_name);
+            }
+        }
+    } else {
+        // Print a specific prompt
+        let name = name.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "error: must provide prompt name or use --list",
+            )
+        })?;
+
+        let prompt_path = prompts_dir.join(format!("{name}.md"));
+        
+        if !prompt_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("error: prompt '{}' not found", name),
+            ).into());
+        }
+
+        let content = fs::read_to_string(&prompt_path)?;
+        print!("{}", content);
+    }
+
+    Ok(())
+}
+
+fn expand_home(path: &str) -> Result<PathBuf, io::Error> {
+    if path.starts_with("~/") {
+        let home = env::var("HOME")
+            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "$HOME not set"))?;
+        Ok(PathBuf::from(home).join(&path[2..]))
+    } else {
+        Ok(PathBuf::from(path))
+    }
 }
 
 pub fn commit(root: &Path, cli: AgentCli) -> Result<CommitOutcome, AgentsError> {

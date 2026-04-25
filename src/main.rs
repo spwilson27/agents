@@ -121,6 +121,22 @@ enum Command {
         #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
         dry_run: bool,
     },
+    #[command(about = "Save a file as a prompt for later use.")]
+    SavePrompt {
+        #[arg(help = "Path to the file to save as a prompt.")]
+        file: PathBuf,
+        #[arg(long, help = "Name for the prompt (defaults to filename without extension).")]
+        name: Option<String>,
+        #[arg(long, help = "Overwrite existing prompt without confirmation.")]
+        force: bool,
+    },
+    #[command(about = "Print a saved prompt or list available prompts.")]
+    Prompt {
+        #[arg(help = "Name of the prompt to print.")]
+        name: Option<String>,
+        #[arg(long, help = "List all available prompts.")]
+        list: bool,
+    },
 }
 
 fn main() {
@@ -180,6 +196,18 @@ fn main() {
             dry_run,
         }) => {
             if let Err(err) = agents::bug_bash(&root, cli, phase, dry_run) {
+                eprintln!("{err}");
+                process::exit(1);
+            }
+        }
+        Some(Command::SavePrompt { file, name, force }) => {
+            if let Err(err) = agents::save_prompt(&file, name.as_deref(), force) {
+                eprintln!("{err}");
+                process::exit(1);
+            }
+        }
+        Some(Command::Prompt { name, list }) => {
+            if let Err(err) = agents::prompt(name.as_deref(), list) {
                 eprintln!("{err}");
                 process::exit(1);
             }
