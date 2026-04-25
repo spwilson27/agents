@@ -34,7 +34,7 @@ set -eu
 RECORD_DIR="{record}"
 count=$(ls "$RECORD_DIR"/phase_*.txt 2>/dev/null | wc -l)
 n=$((count + 1))
-cat > "$RECORD_DIR/phase_${{n}}.txt"
+printf '%s' "${{@: -1}}" > "$RECORD_DIR/phase_${{n}}.txt"
 fail_phase={fail}
 if [ "$fail_phase" -ne 0 ] && [ "$n" -eq "$fail_phase" ]; then
   echo "stub failing on phase $n" >&2

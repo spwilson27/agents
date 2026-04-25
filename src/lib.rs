@@ -154,6 +154,7 @@ pub enum AgentCli {
     Gemini,
     Claude,
     Codex,
+    Copilot,
 }
 
 impl AgentCli {
@@ -163,6 +164,7 @@ impl AgentCli {
             Self::Gemini => "gemini",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -172,6 +174,7 @@ impl AgentCli {
             Self::Gemini => "AGENTS_GEMINI_BIN",
             Self::Claude => "AGENTS_CLAUDE_BIN",
             Self::Codex => "AGENTS_CODEX_BIN",
+            Self::Copilot => "AGENTS_COPILOT_BIN",
         }
     }
 
@@ -833,6 +836,12 @@ fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsE
             parse_stream_json_line,
         ),
         AgentCli::Codex => run_codex_command(root, prompt),
+        AgentCli::Copilot => run_text_command(
+            cli.command()
+                .current_dir(root)
+                .args(["-p", prompt, "--allow-all-tools"]),
+            None,
+        ),
     }
 }
 
@@ -859,6 +868,14 @@ pub fn run_agent_interactive(
             let mut c = cli.command();
             c.current_dir(root).arg("-y");
             run_interactive_command(&mut c, prompt, timeout)
+        }
+        AgentCli::Copilot => {
+            let mut c = cli.command();
+            c.current_dir(root)
+                .arg("--allow-all-tools")
+                .arg("-p")
+                .arg(prompt);
+            run_interactive_tty_command(&mut c, timeout)
         }
         AgentCli::Codex => {
             let mut c = cli.command();
@@ -1300,6 +1317,7 @@ mod tests {
         assert_eq!(AgentCli::Gemini.binary_name(), "gemini");
         assert_eq!(AgentCli::Claude.binary_name(), "claude");
         assert_eq!(AgentCli::Codex.binary_name(), "codex");
+        assert_eq!(AgentCli::Copilot.binary_name(), "copilot");
     }
 
     #[test]
