@@ -20,7 +20,7 @@ Phase 0 — Ground yourself
 
 Phase 1 — Per-epic validation (use subagents)
 
-For each epic or top-level deliverable in plan.md, spawn a review subagent
+For each epic or top-level deliverable in plan.md, spawn a review subagent (model:opus)
 with:
 - The specific plan.md section (scope, acceptance criteria, verification
   strategy).

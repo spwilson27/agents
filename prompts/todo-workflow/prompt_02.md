@@ -52,7 +52,7 @@ Keep docs/plan/meta-plan/run-log.md as the append-only execution ledger
 (task id, status, agent id, timestamp, one-line reason). Then loop:
 
 1. Compute ready set: tasks whose deps are DONE, unclaimed, unblocked.
-2. For each ready task, spawn a subagent (Agent tool, isolation: "worktree")
+2. For each ready task, spawn a subagent (Agent tool, isolation: "worktree", model:sonnet or haiku)
    with a self-contained brief. **One task per subagent, always.** Never
    bundle multiple task_NNN.md files into a single dispatch, even if they
    look small, adjacent, or trivially related — bundled briefs cause
@@ -76,18 +76,19 @@ Keep docs/plan/meta-plan/run-log.md as the append-only execution ledger
    - Required return payload: branch name, worktree path, acceptance
      command output, commit SHAs, diff summary, explicit
      "complete / incomplete + reasons" verdict.
-3. Run independent subagents concurrently (single message, multiple Agent
-   calls). Default concurrency cap 4 unless the plan specifies otherwise.
+3. Run independent subagents (model:sonnet or haiku) concurrently (single
+   message, multiple Agent calls). Default concurrency cap 4 unless the plan
+   specifies otherwise.
 4. When a subagent returns, validate fully before marking DONE:
    - Re-run the acceptance command yourself from the worktree.
    - Read the diff. Reject if you find: stubs, `todo!()`/`unimplemented!()`,
      TODO/FIXME comments added by the worker, empty function bodies,
      skipped tests, scope creep, new abstractions the task didn't call for,
      convention violations, or deferred sub-work.
-   - If incomplete or dirty: spawn a FRESH subagent to finish the work,
-     briefing it with the prior worker's output and your specific
-     file:line objections. Do not accept "mostly working" — iterate until
-     clean or escalate.
+   - If incomplete or dirty: spawn a FRESH subagent (model:sonnet or haiku) to
+     finish the work, briefing it with the prior worker's output and your
+     specific file:line objections. Do not accept "mostly working" — iterate
+     until clean or escalate.
    - If clean: merge the worktree branch into the feature branch with
      --no-ff (preserve atomic commits), then delete the worktree
      (`git worktree remove`) and its branch (`git branch -d`). Log
@@ -99,11 +100,11 @@ Phase 2 — Integration and regressions
 After each epic's tasks are DONE, and BEFORE moving to the next epic:
 1. Run the epic-level verification from its epic doc (full suite,
    platform-check, e2e as specified) on the feature branch.
-2. Spawn a review subagent to critique the landed epic against its design
-   doc and acceptance criteria. Feed it the epic doc, the merged diff
-   range, and run-log.md. Address every concern it raises before advancing
-   — either by spawning fix subagents or, if the concern is out of scope,
-   documenting the decision in run-log.md with rationale.
+2. Spawn a review subagent (model:opus) to critique the landed epic against its
+   design doc and acceptance criteria. Feed it the epic doc, the merged diff
+  range, and run-log.md. Address every concern it raises before advancing —
+  either by spawning fix subagents (model:sonnet or haiku) or, if the concern is out of scope,
+  documenting the decision in run-log.md with rationale.
 3. Regressions become new task_NNN.md entries under the owning epic — do
    not hotfix inline. Add them to your TaskCreate list.
 4. Update TODO_INDEX.md when parent TODO items are fully satisfied. Never
@@ -114,7 +115,7 @@ Phase 3 — Closeout
 When all non-deferred epics are DONE:
 1. Run the cross-cutting verification from plan.md end-to-end on the
    feature branch.
-2. Fan out final review across parallel subagents — a single reviewer
+2. Fan out final review across parallel subagents (model: opus) — a single reviewer
    cannot hold the whole plan in context without skimming. Dispatch in
    one message, multiple Agent calls:
    - **One reviewer per epic**: brief each with the epic doc, its

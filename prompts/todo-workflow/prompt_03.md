@@ -38,10 +38,10 @@ Phase 2 — Rebase and presubmit
 1. Fetch origin and rebase the feature branch onto origin/main. Resolve
    conflicts by understanding both sides — never `-X theirs/ours`
    blindly, never `reset --hard` away real work. If a conflict requires
-   code judgement, spawn a subagent with the specific file paths,
+   code judgement, spawn a subagent (model:sonnet) with the specific file paths,
    conflict markers, and the semantics of both sides.
 2. Run `./run.sh presubmit`. It must pass cleanly.
-   - On failure: diagnose root cause. Spawn a subagent to fix with the
+   - On failure: diagnose root cause. Spawn a subagent  (model:sonnet) to fix with the
      full failure output, the offending files, and instructions to add
      a regression test first if it's a bug. Re-run presubmit after each
      fix until green. Do not skip hooks, do not disable tests, do not
@@ -63,12 +63,12 @@ Phase 3 — Push and open PR
 
 Phase 4 — First review pass
 
-1. Spawn a review subagent. Brief it to fetch the MR via `glab mr view`
+1. Spawn a review subagent (model:opus). Brief it to fetch the MR via `glab mr view`
    / `glab mr diff`, read the plan and design docs, and produce a
    concrete list of concerns with file:line citations, severity-tagged
    (P0/P1/P2/nit).
 2. Address every concern. Do not defer. For each:
-   - P0/P1: spawn a fix subagent with the specific file:line and the
+   - P0/P1: spawn a fix subagent (model:sonnet) with the specific file:line and the
      reviewer's reasoning; validate the fix with the relevant test
      command before accepting.
    - P2/nit: fix unless there's a documented reason not to (record the
@@ -78,7 +78,7 @@ Phase 4 — First review pass
 
 Phase 5 — Final review pass
 
-1. Spawn a second, independent review subagent for a fresh-eyes pass
+1. Spawn a second, independent review subagent (model:opus) for a fresh-eyes pass
    against the MR as it now stands. Same brief shape: severity-tagged
    concerns with citations, this time explicitly checking that the
    plan.md scope and design-doc commitments are fully satisfied.
