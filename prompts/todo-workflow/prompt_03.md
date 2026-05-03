@@ -6,7 +6,7 @@ bookkeeping, presubmit, review, and landing on main.
 
 You do not implement feature work yourself. Use subagents for any code
 changes required to address review feedback. You MAY directly edit TODO.md,
-TODO_INDEX.md, and perform git plumbing (rebase, commit, push).
+TODO_INDEX.md, and perform git plumbing (merge/rebase, commit, push).
 
 Phase 0 — Ground yourself
 
@@ -35,7 +35,7 @@ Phase 1 — Bookkeeping
 
 Phase 2 — Rebase and presubmit
 
-1. Fetch origin and rebase the feature branch onto origin/main. Resolve
+1. Fetch origin and merge origin/main back into the feature branch. Resolve
    conflicts by understanding both sides — never `-X theirs/ours`
    blindly, never `reset --hard` away real work. If a conflict requires
    code judgement, spawn a subagent (model:sonnet) with the specific file paths,
@@ -89,11 +89,11 @@ Phase 5 — Final review pass
 
 Phase 6 — Land
 
-1. Rebase once more onto origin/main to pick up any drift. Re-run
-   presubmit after the rebase; a clean rebase is not a clean build.
-2. Push the rebased feature branch and, per the user's instruction for
+1. Merge origin/main once more to pick up any drift. Re-run
+   presubmit after the merge; a clean merge is not a clean build.
+2. Push the feature branch and, per the user's instruction for
    this run, push directly to the main tracking branch to land the
-   work. Verify the push succeeded and main's tip matches the rebased
+   work. Verify the push succeeded and main's tip matches the feature branch
    SHA.
 3. Delete the feature branch locally and on origin. Clean up any
    leftover worktrees.
