@@ -1,56 +1,201 @@
-**Scope of this invocation: failing regression tests only.** Your deliverables are new test files that reproduce bugs from the registry. Do NOT modify production source code to fix any bug — fixes happen in prompt_03.md. Do NOT open PRs. The only repo-state changes you may make are: adding new test files (or new test cases inside existing test modules), and updating the registry at `docs/plan/bug-bash.md` to cross-reference the authored test per bug. If you catch yourself editing non-test source to silence a failing test, stop — that is out of scope for this phase.
+**Scope of this invocation: failing regression tests only.** You are the
+reproduction coordinator. Your job is to turn actionable bug entries from
+`docs/bugs/**/*.md` into failing regression tests by dispatching worker
+subagents in git worktrees, validating their results, and annotating the
+registries. Do NOT modify production source code to fix any bug. Do NOT open
+PRs.
 
-You are the reproduction orchestrator. A discovery agent (prompt_01.md) has produced `docs/plan/bug-bash.md`. Your job is to turn every entry into a failing regression test, dispatching subagents in parallel. You do not author tests yourself.
+Concurrency: keep at most {jobs} reproduce worker(s) active at a time.
+State file: `{reproduce_state}`.
+Search snapshot: `{search_state}` if present.
+{restart_mode}
 
-Branching
+Coordinator ownership
 
-- Work on a feature branch off main (e.g. `bug-bash-YYYY-MM-DD`). Never commit on main.
-- Every subagent operates inside its own git worktree off this branch. State this explicitly in every dispatch brief.
+- You are the only writer of `docs/bugs/**/*.md`, `{reproduce_state}`, and
+  `docs/bugs/reproduce-summary.md`.
+- Worker subagents write tests in their own worktrees and produce result
+  manifests. They must not edit registries, summaries, or coordinator state.
+- Treat each work item as `<registry path>#BUG-NNN` because bug IDs are local to
+  each per-file registry.
+- Work one bug per worker until this workflow has proven reliable.
+- If the CLI you are running in cannot spawn true subagents, simulate the same
+  contract yourself: create the worktree, make the test edit inside that
+  worktree, validate it, commit it, write the worker manifest, then return to
+  the coordinator checkout for aggregation.
 
-Phase 0 — Ground yourself
+Phase 0 - Ground yourself
 
-1. Read AGENTS.md, CLAUDE.md, and `docs/plan/bug-bash.md` in full.
-2. Identify the repo's test harness (framework, common helpers, conventions for regression-test naming).
-3. Seed a TaskCreate list — one task per `BUG-NNN` entry. Update status as state changes; don't batch.
-4. Create the feature branch.
+1. Read AGENTS.md, CLAUDE.md, README.md, test-related docs, and `{search_state}`
+   if it exists.
+2. If restart mode is active and `{reproduce_state}` exists, archive it by
+   renaming it with a timestamp suffix before building a new queue.
+3. If resume mode is active and `{reproduce_state}` exists, load it before
+   scanning registries.
+4. Scan every complete `docs/bugs/**/*.md` registry. Ignore `*.tmp` files and
+   registries with `Total: 0 bugs`.
+5. Add any active bug entries missing from state as `pending`.
+6. Identify the repo's test harness, naming conventions, fixture helpers, and
+   the narrowest command that can run one new regression test.
 
-Phase 1 — Dispatch test authors
+Durable state
 
-Loop over the registry. For each unclaimed bug, spawn a subagent (Agent tool, isolation: "worktree"). Default concurrency cap 4. Each brief must include:
+Persist `{reproduce_state}` before launching a worker and after every status
+transition. Use this status machine:
 
-- The full bug entry verbatim (ID, severity, location, description, reproduction hypothesis, suggested regression test).
-- Hard requirements:
-  * "You are working in a git worktree at <path> on branch <branch>. Never touch the main clone or main branch."
-  * Author a test whose name includes the bug id: `regression_bug_NNN_<slug>`.
-  * The test MUST target the exact invariant the bug violates — not a weaker proxy.
-  * The test MUST fail against the current source, for the reason the registry describes. Run it and capture the failure output.
-  * Do NOT modify any non-test source file to make the test compile or fail "nicely." If the bug prevents the test from being written (e.g., the function is private), surface that in your return payload — do not paper over it.
-  * Use atomic commits with the bug id in the message (e.g. `test(bug-042): reproduce panic on empty input`).
-- Required return payload: test file path, test name, commit SHA, captured failure output, and an explicit verdict: `reproduced` / `passed-unexpectedly` / `blocked`.
+`pending -> in_progress -> reproduced | withdrawn | blocked | failed`
 
-Phase 2 — Validate and merge
+Do not add a top-level `coordinator_commit` to `{reproduce_state}`. Commit
+accounting belongs on each reproduced item. A state file cannot reliably name
+the commit that contains itself.
 
-When a subagent returns, before marking the bug's test landed:
+State entries should include at least:
 
-1. Re-run the test from the worktree yourself. Confirm it fails, and that the failure mode matches the bug description (not some tangential compile error or unrelated assertion).
-2. Handle the three outcomes:
-   - **reproduced**: merge the worktree branch into the feature branch with `--no-ff`. Delete the worktree and its branch. Update `docs/plan/bug-bash.md` to add a `Regression test:` line on that bug's entry pointing at the new test. Mark the task DONE.
-   - **passed-unexpectedly**: the bug report was incorrect — the test exercises the documented hypothesis but the invariant holds. Spawn a brief follow-up subagent to confirm the test genuinely covers the hypothesis (not a typo or wrong codepath). If confirmed, DELETE the test (do not merge it), and update the registry entry: strike the bug with a `Withdrawn: test <name> demonstrated the reported behavior does not occur; see commit <SHA of the withdrawal note>` line. Do not keep withdrawn bugs in the active count. Mark the task WITHDRAWN.
-   - **blocked**: the subagent could not author a test for a structural reason (private API, missing fixture, requires hardware). Record the blocker in the registry entry as `Blocked: <reason>` and mark the task BLOCKED. Do not merge a sham test.
-3. Reject and respawn if you find: stubs, `#[ignore]`, skipped assertions, tests that pass trivially, tests that assert on the wrong invariant, or tests that modify production source. Brief the fresh subagent with your specific objections.
+```json
+{
+  "docs/bugs/src/lib.md#BUG-001": {
+    "status": "reproduced",
+    "worktree": "../agents-repro-src-lib-bug-001",
+    "branch": "bug-bash/repro/src-lib-bug-001",
+    "started_at": "<UTC timestamp>",
+    "result_file": ".agents/bug-bash/results/src-lib-bug-001.json",
+    "worker_commit": "<commit in worker branch>",
+    "coordinator_commit": "<commit on coordinator branch after merge or cherry-pick>"
+  }
+}
+```
 
-Phase 3 — Sweep
+Resume reconciliation
 
-After every registry entry has been processed:
+- For `in_progress` items with an existing complete manifest, validate the
+  manifest before deciding the next state.
+- At the start of a resumed invocation, do not wait for worker processes from a
+  previous invocation. Assume this invocation is responsible for reconciling all
+  `in_progress` entries.
+- For `in_progress` items with an existing worktree but no manifest, inspect the
+  worktree immediately. If test edits exist, recover in place: run the narrow
+  test, commit valid test edits, write the worker manifest, then aggregate
+  normally. If no useful work exists, mark `failed` and requeue or relaunch.
+- For `in_progress` items whose worktree disappeared, mark `failed` and requeue.
+- For `reproduced` items, verify the test commit is present on the coordinator
+  branch or re-merge/cherry-pick from the recorded branch if available.
+- Use unique worker branch names and unique test names so merges are idempotent.
+  If the registry already contains `Regression test:` for an item and the test
+  exists on the coordinator branch, treat it as terminal.
 
-1. Run the full test suite on the feature branch. Expect one failure per non-withdrawn, non-blocked bug. Any unexpected passes or unexpected additional failures are themselves findings — investigate, and either add to the registry as a new BUG-NNN (with its own task for prompt_03 to fix) or surface in the run log.
-2. Spawn a reviewer subagent to audit: every non-withdrawn bug has a `Regression test:` cross-reference; every withdrawn bug has a rationale; no production source was modified on this branch (verify with `git diff main -- ':!**/tests/**' ':!**/*_test.*' ':!**/test_*'` or the repo's equivalent). Address every concern before exiting.
-3. Append a phase summary to `docs/plan/bug-bash.md`: total bugs, reproduced, withdrawn, blocked, and the feature branch name ready for prompt_03.
+Worker contract
+
+For each ready bug, create a worktree from the coordinator branch and dispatch a
+worker with:
+
+- The full bug entry verbatim.
+- The stable work item key, e.g. `docs/bugs/src/lib.md#BUG-001`.
+- The worktree path and branch name.
+- Instructions to author the narrowest failing regression test only.
+- Instructions to commit test changes with the bug id in the commit message.
+- Instructions to write `.agents/bug-bash/results/<slug>.json.tmp`, then rename
+  it to `.agents/bug-bash/results/<slug>.json`.
+- Instructions to run only the narrowest command needed for that bug while
+  authoring and validating the worker result. Do not require the full suite to
+  pass inside a worker worktree.
+
+Worker completion is mandatory. Do not leave a worker worktree with uncommitted
+test edits and no manifest. Before moving to the next work item, each worker
+must be in exactly one of these states:
+
+- valid test committed and manifest written;
+- no test code kept and manifest/status explains `withdrawn` or `blocked`;
+- failed/requeued in `{reproduce_state}` with a short reason.
+
+Worker manifest format:
+
+```json
+{
+  "work_item": "docs/bugs/src/lib.md#BUG-001",
+  "status": "reproduced",
+  "test_file": "tests/regression.rs",
+  "test_name": "regression_bug_001_src_lib_empty_input",
+  "command": "cargo test regression_bug_001_src_lib_empty_input",
+  "failure_excerpt": "assertion failed: ...",
+  "worker_commit": "abc1234",
+  "notes": "Fails for the documented invariant."
+}
+```
+
+Allowed manifest statuses: `reproduced`, `withdrawn`, `blocked`,
+`needs-review`.
+
+Validation and aggregation
+
+- Always rerun the worker's reported test command in the worker worktree before
+  accepting `reproduced`.
+- Accept `reproduced` only when the test fails against current source for the
+  documented invariant. Compile errors, ignored tests, skipped assertions,
+  trivial assertions, and unrelated failures do not count.
+- Reproduced tests are intentionally failing. If a full suite run fails because
+  of previously accepted regression tests, that is expected and must not block
+  accepting a new narrow reproduced test.
+- Never edit production source to make the suite pass during reproduce. Passing
+  the suite is the fix phase's job.
+- If reproduced, merge or cherry-pick the worker test commit into the
+  coordinator branch. Then annotate the original registry entry with
+  `Regression test: <path>::<test name>` and `Failure command: <command>`.
+- After merging or cherry-picking, capture the coordinator branch commit with
+  `git rev-parse HEAD`. This is `coordinator_commit`. The worker manifest's
+  original test commit is `worker_commit`. Do not store a worker commit in
+  state or summary as if it were the coordinator commit.
+- `coordinator_commit` is the coordinator-branch commit that introduced this
+  specific bug's regression test. Do not later overwrite an earlier bug's
+  `coordinator_commit` with an unrelated later summary or different bug commit.
+- Copy every accepted worker manifest into the coordinator checkout at
+  `.agents/bug-bash/results/<slug>.json`. If the copied manifest only contains
+  `commit`, normalize it to `worker_commit`, then add `coordinator_commit`.
+  The state `result_file` must point to this coordinator-local copy, not only to
+  a file that exists in a worker worktree.
+- If withdrawn, do not merge test code. Annotate the original registry entry
+  with `Withdrawn: <reason>`.
+- If blocked, do not merge partial tests. Annotate the original registry entry
+  with `Blocked: <reason>`.
+- If needs-review, inspect the worktree and either accept, reject and relaunch,
+  or mark blocked/withdrawn with a reason.
+
+Mid-run discovery
+
+- Re-scan `docs/bugs/**/*.md` at startup, after resume reconciliation, and
+  between worker batches.
+- Enqueue new bug entries found mid-run without interrupting active workers.
+- Ignore `*.tmp` registries; search writes those while preparing atomic output.
+- If a registry entry changes while its worker is in progress, keep validating
+  against the assigned snapshot. If the entry disappeared, mark the state
+  `withdrawn` or `failed` with a stale-entry note instead of blindly merging.
+
+Sweep
+
+1. Run the repo's normal test suite or the broadest practical subset. Expect
+   reproduced tests to fail until the fix phase.
+2. Verify no production source was modified except explicit test-only fixtures
+   allowed by repo conventions.
+3. Audit aggregation before writing the final summary:
+   - Every `reproduced` state entry has `worker_commit`, `coordinator_commit`,
+     and a coordinator-local manifest at its `result_file`.
+   - For every reproduced item, `worker_commit` and `coordinator_commit` match
+     exactly between `{reproduce_state}` and the coordinator-local manifest.
+   - Every `coordinator_commit` exists on the coordinator branch.
+   - The number of coordinator-local manifest files equals the number of
+     `reproduced` state entries.
+   - Every registry entry marked with `Regression test:` has a matching
+     reproduced state entry and manifest.
+   If any audit check fails, fix the aggregation before declaring success.
+4. Write `docs/bugs/reproduce-summary.md` with totals: registries read, bugs
+   considered, reproduced, withdrawn, blocked, failed, and commands run.
 
 Rules
 
-- You orchestrate; subagents write tests.
-- Never commit to or push main. Never modify non-test source on this branch.
-- Never mark a bug reproduced unless you personally re-ran the test and saw it fail for the right reason.
-- A test that unexpectedly passes means the bug report was wrong — the test must be removed, not massaged to fail.
-- Resolve ambiguity autonomously; log the choice in the registry entry.
+- Prefer one precise failing test over broad tests that fail for unclear
+  reasons.
+- Never mark a bug reproduced unless the test fails before the fix and points at
+  the documented invariant.
+- Never keep sham tests: no ignored tests, skipped assertions, or tests that
+  only assert setup.
+- Keep registry annotations local to the per-file registry that contains the
+  bug.

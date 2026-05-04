@@ -30,11 +30,18 @@ fn save_prompt_saves_file_with_default_name() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let saved = home.join(".config/agents/prompts/my-instructions.md");
     assert!(saved.exists());
-    assert_eq!(fs::read_to_string(&saved).unwrap(), "# Instructions\nDo the thing.\n");
+    assert_eq!(
+        fs::read_to_string(&saved).unwrap(),
+        "# Instructions\nDo the thing.\n"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Saved prompt 'my-instructions'"));
@@ -53,7 +60,11 @@ fn save_prompt_uses_custom_name() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let saved = home.join(".config/agents/prompts/custom.md");
     assert!(saved.exists());
@@ -72,13 +83,26 @@ fn save_prompt_force_overwrites_existing() {
     fs::write(&source, "new").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_agents"))
-        .args(["save-prompt", source.to_str().unwrap(), "--name", "existing", "--force"])
+        .args([
+            "save-prompt",
+            source.to_str().unwrap(),
+            "--name",
+            "existing",
+            "--force",
+        ])
         .env("HOME", home)
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(fs::read_to_string(prompts_dir.join("existing.md")).unwrap(), "new");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(prompts_dir.join("existing.md")).unwrap(),
+        "new"
+    );
 }
 
 #[test]
@@ -110,7 +134,11 @@ fn prompt_prints_saved_prompt() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "prompt body here");
 }
 
@@ -144,7 +172,11 @@ fn prompt_list_shows_saved_prompts() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "alpha\nbeta");
 }

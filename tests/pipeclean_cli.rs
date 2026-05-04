@@ -122,7 +122,14 @@ fn pipeclean_stops_on_phase_failure() {
 fn pipeclean_single_phase_flag() {
     let fx = make_fixture(None);
     let output = bin()
-        .args(["pipe-clean", "--cli", "claude", "--phase", "review", "--root"])
+        .args([
+            "pipe-clean",
+            "--cli",
+            "claude",
+            "--phase",
+            "review",
+            "--root",
+        ])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")

@@ -4,18 +4,23 @@ use std::process::Command;
 
 use tempfile::{TempDir, tempdir};
 
-// Exact bytes of the embedded prompts under prompts/bug-bash/.
-// Asserting against these prevents an accidental phase swap in the prompts
-// directory from going undetected.
-const PROMPT_HUNT: &str = include_str!("../prompts/bug-bash/prompt_01.md");
+// Exact bytes of the embedded reproduction prompt under prompts/bug-bash/.
 const PROMPT_REPRODUCE: &str = include_str!("../prompts/bug-bash/prompt_02.md");
-const PROMPT_FIX: &str = include_str!("../prompts/bug-bash/prompt_03.md");
-const PROMPT_LAND: &str = include_str!("../prompts/bug-bash/prompt_04.md");
 
-const PHASE_PROMPTS: &[&str] = &[PROMPT_HUNT, PROMPT_REPRODUCE, PROMPT_FIX, PROMPT_LAND];
+fn expected_reproduce_prompt(jobs: usize, restart: bool) -> String {
+    let restart_mode = if restart {
+        "Restart mode: archive any existing reproduce state before building a fresh queue."
+    } else {
+        "Resume mode: if reproduce state exists, reconcile it and continue from durable state."
+    };
+    PROMPT_REPRODUCE
+        .replace("{jobs}", &jobs.to_string())
+        .replace("{restart_mode}", restart_mode)
+        .replace("{reproduce_state}", "docs/bugs/reproduce-state.json")
+        .replace("{search_state}", "docs/bugs/search-state.json")
+}
 
 struct Fixture {
-    #[allow(dead_code)]
     root: TempDir,
     record_dir: TempDir,
     stub: PathBuf,
@@ -57,6 +62,9 @@ exit 0
 
 fn make_fixture(fail_phase: Option<usize>) -> Fixture {
     let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
     let record_dir = tempdir().unwrap();
     let stub = make_stub(record_dir.path(), fail_phase);
     Fixture {
@@ -71,7 +79,7 @@ fn bin() -> Command {
 }
 
 #[test]
-fn bug_bash_runs_four_phases_in_order() {
+fn bug_bash_runs_search_then_reproduce_in_order() {
     let fx = make_fixture(None);
     let output = bin()
         .args(["bug-bash", "--cli", "claude", "--root"])
@@ -85,16 +93,15 @@ fn bug_bash_runs_four_phases_in_order() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (n, expected) in PHASE_PROMPTS.iter().enumerate() {
-        let path = fx.record_dir.path().join(format!("phase_{}.txt", n + 1));
-        let captured = fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            captured.trim_end(),
-            expected.trim_end(),
-            "phase {} captured stdin did not match embedded prompt",
-            n + 1
-        );
-    }
+    let search = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
+    assert!(search.contains("Read and follow the following prompt @.bug-hunt-prompt.tmp.md"));
+
+    let reproduce = fs::read_to_string(fx.record_dir.path().join("phase_2.txt")).unwrap();
+    assert_eq!(
+        reproduce.trim_end(),
+        expected_reproduce_prompt(1, false).trim_end(),
+        "phase 2 captured stdin did not match embedded reproduce prompt",
+    );
 }
 
 #[test]
@@ -126,7 +133,14 @@ fn bug_bash_stops_on_phase_failure() {
 fn bug_bash_single_phase_flag() {
     let fx = make_fixture(None);
     let output = bin()
-        .args(["bug-bash", "--cli", "claude", "--phase", "fix", "--root"])
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--root",
+        ])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
@@ -140,10 +154,49 @@ fn bug_bash_single_phase_flag() {
     let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
     assert_eq!(
         captured.trim_end(),
-        PROMPT_FIX.trim_end(),
-        "single-phase stdin did not match embedded fix prompt"
+        expected_reproduce_prompt(1, false).trim_end(),
+        "single-phase stdin did not match embedded reproduce prompt"
     );
     assert!(!fx.record_dir.path().join("phase_2.txt").exists());
+}
+
+#[test]
+fn bug_bash_reproduce_prompt_includes_jobs_and_restart_mode() {
+    let fx = make_fixture(None);
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--jobs",
+            "3",
+            "--restart",
+            "--root",
+        ])
+        .arg(fx.root.path())
+        .env("AGENTS_CLAUDE_BIN", &fx.stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
+    assert_eq!(
+        captured.trim_end(),
+        expected_reproduce_prompt(3, true).trim_end(),
+        "single-phase stdin did not include rendered reproduce settings"
+    );
+    assert!(captured.contains("Concurrency: keep at most 3 reproduce worker(s) active"));
+    assert!(captured.contains("Restart mode: archive any existing reproduce state"));
+    assert!(!captured.contains("{jobs}"));
+    assert!(!captured.contains("{restart_mode}"));
+    assert!(!captured.contains("{reproduce_state}"));
+    assert!(!captured.contains("{search_state}"));
 }
 
 #[test]
@@ -158,10 +211,34 @@ fn bug_bash_dry_run_prints_plan_and_skips_agent() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hunt"));
+    assert!(stdout.contains("search"));
     assert!(stdout.contains("reproduce"));
-    assert!(stdout.contains("fix"));
-    assert!(stdout.contains("land"));
-    assert!(stdout.contains("(embedded)"));
+    assert!(stdout.contains("(per-file)"));
+    assert!(stdout.contains("(dry-run)"));
+    assert!(!fx.record_dir.path().join("phase_1.txt").exists());
+}
+
+#[test]
+fn bug_bash_search_skips_existing_outputs() {
+    let fx = make_fixture(None);
+    let out = fx.root.path().join("docs/bugs/src/lib.md");
+    fs::create_dir_all(out.parent().unwrap()).unwrap();
+    fs::write(&out, "already searched").unwrap();
+
+    let output = bin()
+        .args(["bug-bash", "--cli", "claude", "--phase", "search", "--root"])
+        .arg(fx.root.path())
+        .env("AGENTS_CLAUDE_BIN", &fx.stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("skip (exists): src/lib.rs"));
+    let state = fs::read_to_string(fx.root.path().join("docs/bugs/search-state.json")).unwrap();
+    assert!(state.contains("\"src/lib.rs\""));
+    assert!(state.contains("\"status\": \"skipped-existing\""));
+    assert!(state.contains("\"temp_output\": \"docs/bugs/src/lib.md.tmp\""));
     assert!(!fx.record_dir.path().join("phase_1.txt").exists());
 }

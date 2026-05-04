@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
-use agents::{AgentCli, BugBashPhase, Phase, PipeCleanPhase};
+use agents::{AgentCli, BugBashPhase, BugSearchConfig, Phase, PipeCleanPhase};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -36,9 +36,7 @@ enum Command {
         #[arg(long, default_value = ".", help = "Git repository root directory.")]
         root: PathBuf,
     },
-    #[command(
-        about = "Run the three-phase todo-workflow orchestration (plan, implement, land)."
-    )]
+    #[command(about = "Run the three-phase todo-workflow orchestration (plan, implement, land).")]
     TodoWorkflow {
         #[arg(
             long,
@@ -56,12 +54,13 @@ enum Command {
             help = "Which phase(s) to run."
         )]
         phase: Phase,
-        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        #[arg(
+            long,
+            help = "Print the resolved plan and exit without invoking the agent."
+        )]
         dry_run: bool,
     },
-    #[command(
-        about = "Run the two-phase pipeclean orchestration (fix local + CI, then review)."
-    )]
+    #[command(about = "Run the two-phase pipeclean orchestration (fix local + CI, then review).")]
     PipeClean {
         #[arg(
             long,
@@ -79,7 +78,10 @@ enum Command {
             help = "Which phase(s) to run."
         )]
         phase: PipeCleanPhase,
-        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        #[arg(
+            long,
+            help = "Print the resolved plan and exit without invoking the agent."
+        )]
         dry_run: bool,
     },
     #[command(
@@ -95,16 +97,17 @@ enum Command {
         cli: AgentCli,
         #[arg(long, default_value = ".", help = "Repository root directory.")]
         root: PathBuf,
-        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        #[arg(
+            long,
+            help = "Print the resolved plan and exit without invoking the agent."
+        )]
         dry_run: bool,
     },
-    #[command(
-        about = "Run the four-phase bug-bash orchestration (hunt, reproduce, fix, land)."
-    )]
+    #[command(about = "Run the two-phase bug-bash workflow (search, reproduce).")]
     BugBash {
         #[arg(
             long,
-            default_value = "claude",
+            default_value = "gemini",
             value_enum,
             help = "Agent CLI to drive the orchestration."
         )]
@@ -118,14 +121,43 @@ enum Command {
             help = "Which phase(s) to run."
         )]
         phase: BugBashPhase,
-        #[arg(long, help = "Print the resolved plan and exit without invoking the agent.")]
+        #[arg(
+            long,
+            help = "Print the resolved plan and exit without invoking the agent."
+        )]
         dry_run: bool,
+        #[arg(
+            long,
+            default_value = "src",
+            help = "Source tree to scan during search."
+        )]
+        search_root: PathBuf,
+        #[arg(long, help = "Re-run search even if a per-file bug registry exists.")]
+        force: bool,
+        #[arg(long, help = "Process at most N files during search.")]
+        limit: Option<usize>,
+        #[arg(long, help = "Resume search at this repository-relative source path.")]
+        start_at: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Run up to N searches or reproduce workers in parallel."
+        )]
+        jobs: usize,
+        #[arg(
+            long,
+            help = "Archive reproduce state and start a fresh reproduce queue."
+        )]
+        restart: bool,
     },
     #[command(about = "Save a file as a prompt for later use.")]
     SavePrompt {
         #[arg(help = "Path to the file to save as a prompt.")]
         file: PathBuf,
-        #[arg(long, help = "Name for the prompt (defaults to filename without extension).")]
+        #[arg(
+            long,
+            help = "Name for the prompt (defaults to filename without extension)."
+        )]
         name: Option<String>,
         #[arg(long, help = "Overwrite existing prompt without confirmation.")]
         force: bool,
@@ -194,8 +226,24 @@ fn main() {
             root,
             phase,
             dry_run,
+            search_root,
+            force,
+            limit,
+            start_at,
+            jobs,
+            restart,
         }) => {
-            if let Err(err) = agents::bug_bash(&root, cli, phase, dry_run) {
+            let search_config = BugSearchConfig {
+                source_root: search_root,
+                force,
+                dry_run,
+                limit,
+                start_at,
+                jobs,
+                restart,
+            };
+            if let Err(err) = agents::bug_bash_with_search_config(&root, cli, phase, search_config)
+            {
                 eprintln!("{err}");
                 process::exit(1);
             }

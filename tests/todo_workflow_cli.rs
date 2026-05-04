@@ -128,7 +128,14 @@ fn todo_workflow_stops_on_phase_failure() {
 fn todo_workflow_single_phase_flag() {
     let fx = make_fixture(None);
     let output = bin()
-        .args(["todo-workflow", "--cli", "claude", "--phase", "land", "--root"])
+        .args([
+            "todo-workflow",
+            "--cli",
+            "claude",
+            "--phase",
+            "land",
+            "--root",
+        ])
         .arg(fx.root.path())
         .env("AGENTS_CLAUDE_BIN", &fx.stub)
         .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
