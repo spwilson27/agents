@@ -141,7 +141,7 @@ enum Command {
         #[arg(
             long,
             default_value_t = 1,
-            help = "Run up to N searches or reproduce workers in parallel."
+            help = "Number of agents to run in parallel (applies to both search and reproduce phases)."
         )]
         jobs: usize,
         #[arg(

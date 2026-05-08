@@ -7,17 +7,72 @@ use tempfile::{TempDir, tempdir};
 // Exact bytes of the embedded reproduction prompt under prompts/bug-bash/.
 const PROMPT_REPRODUCE: &str = include_str!("../prompts/bug-bash/prompt_02.md");
 
-fn expected_reproduce_prompt(jobs: usize, restart: bool) -> String {
+fn expected_reproduce_prompt(work_item: &str, restart: bool) -> String {
+    let registry_path = work_item
+        .split_once('#')
+        .map(|(path, _)| path)
+        .unwrap_or(work_item);
     let restart_mode = if restart {
-        "Restart mode: archive any existing reproduce state before building a fresh queue."
+        "Restart mode: the `agents` tool archived any prior `docs/bugs/reproduce-state.json` before this run; treat your work item as pending unless the new state file already records progress."
     } else {
-        "Resume mode: if reproduce state exists, reconcile it and continue from durable state."
+        "Resume mode: if `docs/bugs/reproduce-state.json` exists, load it and reconcile your entry before acting."
     };
     PROMPT_REPRODUCE
-        .replace("{jobs}", &jobs.to_string())
+        .replace("{work_item}", work_item)
+        .replace("{registry_path}", registry_path)
         .replace("{restart_mode}", restart_mode)
         .replace("{reproduce_state}", "docs/bugs/reproduce-state.json")
         .replace("{search_state}", "docs/bugs/search-state.json")
+}
+
+fn write_reproduce_targets_registry(root: &Path) {
+    // Must not mirror `src/lib.rs` -> `docs/bugs/src/lib.md` or search skips work.
+    let p = root.join("docs/bugs/extra-for-repro.md");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(
+        &p,
+        r#"# Bug Bash Registry - extra
+
+Generated: 2020-01-01
+Total: 1 bugs (1 high, 0 medium, 0 low)
+
+## BUG-001 - Example bug
+- Severity: high
+- Location: src/lib.rs:1
+- Description: test
+- Reproduction hypothesis: invoke example()
+- Suggested regression test: assert return value
+"#,
+    )
+    .unwrap();
+}
+
+fn write_reproduce_targets_registry_two_bugs(root: &Path) {
+    let p = root.join("docs/bugs/extra-for-repro.md");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(
+        &p,
+        r#"# Bug Bash Registry - extra
+
+Generated: 2020-01-01
+Total: 2 bugs (2 high, 0 medium, 0 low)
+
+## BUG-001 - Example bug one
+- Severity: high
+- Location: src/lib.rs:1
+- Description: test
+- Reproduction hypothesis: invoke example()
+- Suggested regression test: assert return value
+
+## BUG-002 - Example bug two
+- Severity: high
+- Location: src/lib.rs:2
+- Description: test two
+- Reproduction hypothesis: invoke example() with edge input
+- Suggested regression test: assert edge return value
+"#,
+    )
+    .unwrap();
 }
 
 struct Fixture {
@@ -65,6 +120,7 @@ fn make_fixture(fail_phase: Option<usize>) -> Fixture {
     let src_dir = root.path().join("src");
     fs::create_dir_all(&src_dir).unwrap();
     fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry(root.path());
     let record_dir = tempdir().unwrap();
     let stub = make_stub(record_dir.path(), fail_phase);
     Fixture {
@@ -99,7 +155,7 @@ fn bug_bash_runs_search_then_reproduce_in_order() {
     let reproduce = fs::read_to_string(fx.record_dir.path().join("phase_2.txt")).unwrap();
     assert_eq!(
         reproduce.trim_end(),
-        expected_reproduce_prompt(1, false).trim_end(),
+        expected_reproduce_prompt("docs/bugs/extra-for-repro.md#BUG-001", false).trim_end(),
         "phase 2 captured stdin did not match embedded reproduce prompt",
     );
 }
@@ -154,14 +210,14 @@ fn bug_bash_single_phase_flag() {
     let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
     assert_eq!(
         captured.trim_end(),
-        expected_reproduce_prompt(1, false).trim_end(),
+        expected_reproduce_prompt("docs/bugs/extra-for-repro.md#BUG-001", false).trim_end(),
         "single-phase stdin did not match embedded reproduce prompt"
     );
     assert!(!fx.record_dir.path().join("phase_2.txt").exists());
 }
 
 #[test]
-fn bug_bash_reproduce_prompt_includes_jobs_and_restart_mode() {
+fn bug_bash_reproduce_prompt_includes_work_item_and_restart_mode() {
     let fx = make_fixture(None);
     let output = bin()
         .args([
@@ -188,12 +244,12 @@ fn bug_bash_reproduce_prompt_includes_jobs_and_restart_mode() {
     let captured = fs::read_to_string(fx.record_dir.path().join("phase_1.txt")).unwrap();
     assert_eq!(
         captured.trim_end(),
-        expected_reproduce_prompt(3, true).trim_end(),
+        expected_reproduce_prompt("docs/bugs/extra-for-repro.md#BUG-001", true).trim_end(),
         "single-phase stdin did not include rendered reproduce settings"
     );
-    assert!(captured.contains("Concurrency: keep at most 3 reproduce worker(s) active"));
-    assert!(captured.contains("Restart mode: archive any existing reproduce state"));
-    assert!(!captured.contains("{jobs}"));
+    assert!(captured.contains("docs/bugs/extra-for-repro.md#BUG-001"));
+    assert!(captured.contains("Restart mode: the `agents` tool archived"));
+    assert!(!captured.contains("{work_item}"));
     assert!(!captured.contains("{restart_mode}"));
     assert!(!captured.contains("{reproduce_state}"));
     assert!(!captured.contains("{search_state}"));
@@ -214,6 +270,7 @@ fn bug_bash_dry_run_prints_plan_and_skips_agent() {
     assert!(stdout.contains("search"));
     assert!(stdout.contains("reproduce"));
     assert!(stdout.contains("(per-file)"));
+    assert!(stdout.contains("(per-bug)"));
     assert!(stdout.contains("(dry-run)"));
     assert!(!fx.record_dir.path().join("phase_1.txt").exists());
 }
@@ -241,4 +298,102 @@ fn bug_bash_search_skips_existing_outputs() {
     assert!(state.contains("\"status\": \"skipped-existing\""));
     assert!(state.contains("\"temp_output\": \"docs/bugs/src/lib.md.tmp\""));
     assert!(!fx.record_dir.path().join("phase_1.txt").exists());
+}
+
+#[test]
+fn bug_bash_reproduce_parallel_invokes_all_bugs() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--jobs",
+            "2",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Both bugs must appear in the progress output — printed by our code before each agent
+    // invocation, so they reflect what was actually dispatched regardless of stub timing.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("BUG-001"),
+        "expected BUG-001 in stdout progress; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("BUG-002"),
+        "expected BUG-002 in stdout progress; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("done: 2"),
+        "expected done: 2 in stdout summary; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn bug_bash_reproduce_parallel_continues_after_failure() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+
+    // Stub always fails — both bugs fail, but both must be attempted.
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), Some(1));
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--jobs",
+            "2",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    // Overall command should fail because jobs failed.
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when reproduce jobs fail"
+    );
+
+    // Both bugs must appear in progress — parallel workers don't abort on peer failure.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("BUG-001"),
+        "expected BUG-001 in stdout; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("BUG-002"),
+        "expected BUG-002 in stdout — second bug was not dispatched despite --jobs 2; got:\n{stdout}"
+    );
 }

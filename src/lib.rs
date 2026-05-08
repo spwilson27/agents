@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::ValueEnum;
 use serde_json::Value;
@@ -244,6 +244,7 @@ impl BugBashPhase {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn prompt_body(self) -> &'static str {
         match self {
             Self::Search => BUG_SEARCH_PROMPT_TEMPLATE,
@@ -770,6 +771,8 @@ pub fn bug_bash_with_search_config(
         for (idx, entry) in plan.iter().enumerate() {
             let source = if matches!(entry.phase, BugBashPhase::Search) {
                 "per-file"
+            } else if matches!(entry.phase, BugBashPhase::Reproduce) {
+                "per-bug"
             } else {
                 "embedded"
             };
@@ -781,6 +784,9 @@ pub fn bug_bash_with_search_config(
             if matches!(entry.phase, BugBashPhase::Search) {
                 println!("\n--- phase {} (search) ---", idx + 1);
                 bug_search(root, cli, &search_config)?;
+            } else if matches!(entry.phase, BugBashPhase::Reproduce) {
+                println!("\n--- phase {} (reproduce) ---", idx + 1);
+                bug_reproduce(root, cli, &search_config)?;
             } else {
                 let prompt = bug_bash_phase_prompt(entry.phase, &search_config);
                 println!(
@@ -799,6 +805,8 @@ pub fn bug_bash_with_search_config(
         eprintln!("=== Phase {}: {} ===", idx + 1, entry.phase.label());
         let result = if matches!(entry.phase, BugBashPhase::Search) {
             bug_search(root, cli, &search_config)
+        } else if matches!(entry.phase, BugBashPhase::Reproduce) {
+            bug_reproduce(root, cli, &search_config)
         } else {
             let prompt = bug_bash_phase_prompt(entry.phase, &search_config);
             run_agent_interactive(cli, root, &prompt, timeout)
@@ -818,10 +826,280 @@ pub fn bug_bash_with_search_config(
 }
 
 fn bug_bash_phase_prompt(phase: BugBashPhase, config: &BugSearchConfig) -> String {
+    let _ = config;
     match phase {
-        BugBashPhase::Reproduce => render_bug_reproduce_prompt(config),
-        other => other.prompt_body().to_owned(),
+        BugBashPhase::Search | BugBashPhase::Reproduce | BugBashPhase::All => {
+            unreachable!("bug_bash_phase_prompt: Search/Reproduce/All use dedicated runners")
+        }
+        BugBashPhase::Fix => BUG_BASH_FIX.to_owned(),
+        BugBashPhase::Land => BUG_BASH_LAND.to_owned(),
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BugReproduceWorkItem {
+    pub(crate) registry_rel: String,
+    pub(crate) bug_id: String,
+}
+
+impl BugReproduceWorkItem {
+    fn work_item_key(&self) -> String {
+        format!("{}#{}", self.registry_rel, self.bug_id)
+    }
+}
+
+pub(crate) fn discover_bug_reproduce_work_items(
+    root: &Path,
+) -> Result<Vec<BugReproduceWorkItem>, AgentsError> {
+    let bugs_root = root.join(BUG_SEARCH_OUTPUT_ROOT);
+    if !bugs_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    collect_bug_registry_markdown_files(&bugs_root, &mut paths)?;
+    paths.sort();
+
+    let mut items = Vec::new();
+    for path in paths {
+        let rel = rel_display(root, &path);
+        let content = fs::read_to_string(&path)?;
+        if registry_declares_zero_bugs(&content) {
+            continue;
+        }
+        let mut ids = parse_bug_ids_from_registry(&content);
+        ids.sort_by_key(|id| bug_id_numeric_suffix(id));
+        for bug_id in ids {
+            items.push(BugReproduceWorkItem {
+                registry_rel: rel.clone(),
+                bug_id,
+            });
+        }
+    }
+
+    Ok(items)
+}
+
+fn collect_bug_registry_markdown_files(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), AgentsError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.file_name().and_then(OsStr::to_str).unwrap_or("");
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect_bug_registry_markdown_files(&path, out)?;
+        } else if path.extension() == Some(OsStr::new("md")) {
+            if name.ends_with(".tmp.md") || name == "reproduce-summary.md" {
+                continue;
+            }
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn registry_declares_zero_bugs(content: &str) -> bool {
+    for line in content.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("Total:") else {
+            continue;
+        };
+        let mut parts = rest.trim().split_whitespace();
+        let Some(first) = parts.next() else {
+            continue;
+        };
+        if let Ok(n) = first.parse::<u32>() {
+            if n == 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn parse_bug_ids_from_registry(content: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+    for line in content.lines() {
+        if let Some(id) = parse_bug_heading_line(line) {
+            if seen.insert(id.clone()) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+fn parse_bug_heading_line(line: &str) -> Option<String> {
+    let s = line.trim_start();
+    let s = s.strip_prefix("##")?;
+    let s = s.trim_start();
+    let s = s.strip_prefix("BUG-")?;
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(format!("BUG-{digits}"))
+}
+
+fn bug_id_numeric_suffix(id: &str) -> u32 {
+    id.strip_prefix("BUG-")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+fn archive_reproduce_state(root: &Path) -> Result<(), AgentsError> {
+    let path = root.join(BUG_REPRODUCE_STATE);
+    if !path.is_file() {
+        return Ok(());
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let archived = path.with_extension(format!("json.archived-{stamp}"));
+    fs::rename(&path, &archived)?;
+    Ok(())
+}
+
+fn bug_reproduce(root: &Path, cli: AgentCli, config: &BugSearchConfig) -> Result<(), AgentsError> {
+    let items = discover_bug_reproduce_work_items(root)?;
+    if items.is_empty() {
+        println!("no bugs under {BUG_SEARCH_OUTPUT_ROOT} matched for reproduce");
+        return Ok(());
+    }
+
+    if config.dry_run {
+        println!(
+            "reproduce ({} work item(s)): {}",
+            items.len(),
+            items
+                .iter()
+                .map(BugReproduceWorkItem::work_item_key)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for (idx, item) in items.iter().enumerate() {
+            let key = item.work_item_key();
+            let prompt = render_bug_reproduce_prompt(config, &key);
+            println!(
+                "\n--- reproduce {}/{} ({key}) ---\n{prompt}",
+                idx + 1,
+                items.len(),
+            );
+        }
+        return Ok(());
+    }
+
+    if config.restart {
+        archive_reproduce_state(root)?;
+    }
+
+    let (done, failed, first_error) = if config.jobs <= 1 {
+        run_bug_reproduce_sequential(root, cli, config, items.len(), &items)?
+    } else {
+        run_bug_reproduce_parallel(root, cli, config, items.len(), items)?
+    };
+
+    println!("\ndone: {done}  failed: {failed}");
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+fn run_bug_reproduce_sequential(
+    root: &Path,
+    cli: AgentCli,
+    config: &BugSearchConfig,
+    total: usize,
+    items: &[BugReproduceWorkItem],
+) -> Result<(usize, usize, Option<AgentsError>), AgentsError> {
+    let timeout = workflow_timeout();
+    let mut done = 0usize;
+    let mut failed = 0usize;
+    let mut first_error = None;
+
+    for (idx, item) in items.iter().enumerate() {
+        let key = item.work_item_key();
+        println!("[{}/{}] reproduce: {key}", idx + 1, total);
+        let prompt = render_bug_reproduce_prompt(config, &key);
+        match run_agent_interactive(cli, root, &prompt, timeout) {
+            Ok(()) => done += 1,
+            Err(err) => {
+                eprintln!("  [{}/{}] reproduce {key} failed: {err}", idx + 1, total);
+                failed += 1;
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+
+    Ok((done, failed, first_error))
+}
+
+fn run_bug_reproduce_parallel(
+    root: &Path,
+    cli: AgentCli,
+    config: &BugSearchConfig,
+    total: usize,
+    items: Vec<BugReproduceWorkItem>,
+) -> Result<(usize, usize, Option<AgentsError>), AgentsError> {
+    let root = root.to_path_buf();
+    let config = config.clone();
+    let timeout = workflow_timeout();
+    let worker_count = config.jobs.min(items.len());
+    let queue = Arc::new(Mutex::new(
+        VecDeque::from(items.into_iter().enumerate().collect::<Vec<_>>()),
+    ));
+    let (tx, rx) = mpsc::channel::<(usize, String, Result<(), AgentsError>)>();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let tx = tx.clone();
+            let root = root.clone();
+            let config = config.clone();
+            scope.spawn(move || loop {
+                let item = {
+                    let mut q = queue.lock().expect("reproduce queue poisoned");
+                    q.pop_front()
+                };
+                let Some((idx, item)) = item else { break };
+                let key = item.work_item_key();
+                println!("[{}/{}] reproduce: {key}", idx + 1, total);
+                let prompt = render_bug_reproduce_prompt(&config, &key);
+                let result = run_agent_interactive(cli, &root, &prompt, timeout);
+                let _ = tx.send((idx, key, result));
+            });
+        }
+        drop(tx);
+    });
+
+    let mut done = 0usize;
+    let mut failed = 0usize;
+    let mut first_error = None;
+    for (idx, key, result) in rx {
+        match result {
+            Ok(()) => done += 1,
+            Err(err) => {
+                eprintln!("  [{idx}] reproduce {key} failed: {err}");
+                failed += 1;
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+
+    Ok((done, failed, first_error))
 }
 
 fn bug_search(root: &Path, cli: AgentCli, config: &BugSearchConfig) -> Result<(), AgentsError> {
@@ -1049,9 +1327,7 @@ fn run_bug_search_agent(
         AgentCli::Codex => {
             command
                 .arg("exec")
-                .arg("--skip-git-repo-check")
-                .arg("--sandbox")
-                .arg("workspace-write")
+                .arg("--dangerously-bypass-approvals-and-sandbox")
                 .arg("-C")
                 .arg(root)
                 .arg(&instruction);
@@ -1099,14 +1375,19 @@ fn render_bug_search_prompt(rel_src: &str, rel_out: &str) -> String {
         .replace("{rel_tmp_out}", &rel_tmp_out)
 }
 
-fn render_bug_reproduce_prompt(config: &BugSearchConfig) -> String {
+pub fn render_bug_reproduce_prompt(config: &BugSearchConfig, work_item: &str) -> String {
+    let registry_path = work_item
+        .split_once('#')
+        .map(|(path, _)| path)
+        .unwrap_or(work_item);
     let restart_mode = if config.restart {
-        "Restart mode: archive any existing reproduce state before building a fresh queue."
+        "Restart mode: the `agents` tool archived any prior `docs/bugs/reproduce-state.json` before this run; treat your work item as pending unless the new state file already records progress."
     } else {
-        "Resume mode: if reproduce state exists, reconcile it and continue from durable state."
+        "Resume mode: if `docs/bugs/reproduce-state.json` exists, load it and reconcile your entry before acting."
     };
     BUG_BASH_REPRODUCE
-        .replace("{jobs}", &config.jobs.to_string())
+        .replace("{work_item}", work_item)
+        .replace("{registry_path}", registry_path)
         .replace("{restart_mode}", restart_mode)
         .replace("{reproduce_state}", BUG_REPRODUCE_STATE)
         .replace("{search_state}", BUG_SEARCH_STATE)
@@ -1769,9 +2050,9 @@ fn parse_codex_json_line(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         AgentCli, BugSearchConfig, Phase, TARGETS, add_status_comment, build_commit_prompt,
-        build_status_comment, doc, parse_codex_json_line, parse_stream_json_line,
-        render_bug_reproduce_prompt, render_bug_search_prompt, run_agent_interactive,
-        todo_workflow, workflow_timeout,
+        build_status_comment, discover_bug_reproduce_work_items, doc, parse_codex_json_line,
+        parse_stream_json_line, render_bug_reproduce_prompt, render_bug_search_prompt,
+        run_agent_interactive, todo_workflow, workflow_timeout,
     };
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1929,20 +2210,30 @@ mod tests {
     }
 
     #[test]
-    fn bug_reproduce_prompt_renders_resume_settings() {
+    fn bug_reproduce_prompt_renders_work_item_and_resume_settings() {
         let mut config = BugSearchConfig::new(false);
         config.jobs = 4;
-        let prompt = render_bug_reproduce_prompt(&config);
+        let wi = "docs/bugs/src/lib.md#BUG-007";
+        let prompt = render_bug_reproduce_prompt(&config, wi);
 
-        assert!(prompt.contains("Concurrency: keep at most 4 reproduce worker(s) active"));
+        assert!(prompt.contains("item: `docs/bugs/src/lib.md#BUG-007`"));
+        assert!(prompt.contains("Registry file: `docs/bugs/src/lib.md`"));
+        assert!(
+            prompt
+                .contains("Concurrency: this run is scoped to `docs/bugs/src/lib.md#BUG-007` only")
+        );
         assert!(prompt.contains("State file: `docs/bugs/reproduce-state.json`"));
         assert!(prompt.contains("Search snapshot: `docs/bugs/search-state.json`"));
-        assert!(prompt.contains("Resume mode: if reproduce state exists"));
+        assert!(prompt.contains(
+            "Resume mode: if `docs/bugs/reproduce-state.json` exists, load it and reconcile"
+        ));
+        assert!(prompt.contains("\"work_item\": \"docs/bugs/src/lib.md#BUG-007\""));
     }
 
     #[test]
     fn bug_reproduce_prompt_defines_manifest_contract() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
+        let wi = "docs/bugs/src/lib.md#BUG-001";
+        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false), wi);
 
         assert!(prompt.contains("Worker manifest format:"));
         assert!(prompt.contains("\"work_item\": \"docs/bugs/src/lib.md#BUG-001\""));
@@ -1961,80 +2252,66 @@ mod tests {
     }
 
     #[test]
-    fn bug_reproduce_prompt_restricts_registry_and_summary_writes_to_coordinator() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
+    fn bug_reproduce_prompt_scopes_edits_to_one_bug() {
+        let wi = "docs/bugs/a.md#BUG-002";
+        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false), wi);
 
-        assert!(prompt.contains("You are the only writer of `docs/bugs/**/*.md`"));
-        assert!(prompt.contains("Worker subagents write tests in their own worktrees"));
-        assert!(prompt.contains("They must not edit registries, summaries, or coordinator state"));
-        assert!(prompt.contains("Keep registry annotations local to the per-file registry"));
+        assert!(prompt.contains("one bug only"));
+        assert!(prompt.contains("Do NOT dispatch subagents for\nother bugs"));
+        assert!(prompt.contains("update\n  `docs/bugs/a.md` for `docs/bugs/a.md#BUG-002` only"));
     }
 
     #[test]
-    fn bug_reproduce_prompt_requires_manifest_copy_and_commit_accounting() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
+    fn bug_reproduce_prompt_requires_merge_and_commit_accounting() {
+        let prompt =
+            render_bug_reproduce_prompt(&BugSearchConfig::new(false), "docs/bugs/x.md#BUG-001");
 
         assert!(prompt.contains("coordinator_commit"));
+        assert!(prompt.contains("Copy the accepted manifest into the coordinator checkout"));
         assert!(
-            prompt.contains("Copy every accepted worker manifest into the coordinator checkout")
+            prompt.contains("Never edit production source to make the suite pass during reproduce")
         );
-        assert!(
-            prompt.contains("The number of coordinator-local manifest files equals the number")
-        );
-        assert!(prompt.contains("recover in place"));
-        assert!(prompt.contains("do not wait for worker processes from a\n  previous invocation"));
-        assert!(prompt.contains("Worker completion is mandatory"));
-        assert!(
-            prompt.contains("Do not require the full suite to\n  pass inside a worker worktree")
-        );
-        assert!(prompt.contains("Reproduced tests are intentionally failing"));
-        assert!(prompt.contains("match\n     exactly between"));
-        assert!(prompt.contains("Do not later overwrite an earlier bug's\n  `coordinator_commit`"));
         assert!(prompt.contains("Do not add a top-level `coordinator_commit`"));
     }
 
     #[test]
-    fn bug_reproduce_prompt_covers_interrupted_worker_recovery() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
+    fn bug_reproduce_prompt_recovers_in_progress_entries() {
+        let prompt =
+            render_bug_reproduce_prompt(&BugSearchConfig::new(false), "docs/bugs/x.md#BUG-001");
 
-        assert!(prompt.contains("do not wait for worker processes from a\n  previous invocation"));
-        assert!(prompt.contains("inspect the\n  worktree immediately"));
-        assert!(prompt.contains("If test edits exist, recover in place"));
-        assert!(prompt.contains("Worker completion is mandatory"));
-        assert!(prompt.contains("Do not leave a worker worktree with uncommitted\n"));
-    }
-
-    #[test]
-    fn bug_reproduce_prompt_covers_intentionally_failing_tests() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
-
-        assert!(
-            prompt.contains("Do not require the full suite to\n  pass inside a worker worktree")
-        );
-        assert!(prompt.contains("Reproduced tests are intentionally failing"));
-        assert!(prompt.contains("previously accepted regression tests"));
-        assert!(prompt.contains("must not block\n  accepting a new narrow reproduced test"));
-        assert!(prompt.contains("Passing\n  the suite is the fix phase's job"));
-    }
-
-    #[test]
-    fn bug_reproduce_prompt_covers_dynamic_registry_discovery() {
-        let prompt = render_bug_reproduce_prompt(&BugSearchConfig::new(false));
-
-        assert!(prompt.contains("Re-scan `docs/bugs/**/*.md` at startup"));
-        assert!(prompt.contains("between worker batches"));
-        assert!(prompt.contains("Enqueue new bug entries found mid-run"));
-        assert!(prompt.contains("Ignore `*.tmp` registries"));
-        assert!(prompt.contains("If a registry entry changes while its worker is in progress"));
+        assert!(prompt.contains("If `in_progress` with a worktree but no manifest"));
+        assert!(prompt.contains("inspect the worktree: run"));
+        assert!(prompt.contains("If `in_progress` and the worktree disappeared"));
     }
 
     #[test]
     fn bug_reproduce_prompt_renders_restart_settings() {
         let mut config = BugSearchConfig::new(false);
         config.restart = true;
-        let prompt = render_bug_reproduce_prompt(&config);
+        let prompt = render_bug_reproduce_prompt(&config, "docs/bugs/x.md#BUG-001");
 
-        assert!(prompt.contains("Restart mode: archive any existing reproduce state"));
+        assert!(prompt.contains("Restart mode: the `agents` tool archived"));
+        assert!(prompt.contains("reproduce-state.json` before this run"));
+    }
+
+    #[test]
+    fn discover_bug_reproduce_work_items_skips_zero_registry_and_sorts_ids() {
+        let root = tempdir().unwrap();
+        let r1 = root.path().join("docs/bugs/m1.md");
+        fs::create_dir_all(r1.parent().unwrap()).unwrap();
+        fs::write(&r1, "# R\nTotal: 0 bugs\n\n## BUG-001 - ghost\n").unwrap();
+        let r2 = root.path().join("docs/bugs/m2.md");
+        fs::write(
+            &r2,
+            "# R2\nTotal: 2 bugs\n\n## BUG-010 - z\n## BUG-002 - a\n",
+        )
+        .unwrap();
+
+        let items = discover_bug_reproduce_work_items(root.path()).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].bug_id, "BUG-002");
+        assert_eq!(items[1].bug_id, "BUG-010");
+        assert!(items[0].registry_rel.ends_with("m2.md"));
     }
 
     #[cfg(unix)]
