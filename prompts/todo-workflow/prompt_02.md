@@ -9,10 +9,10 @@ implement. Other meta-orchestrators may be operating from separate clones, so
 TODO_INDEX.md remains the source of truth for ownership.
 
 You must orchestrate ALL planned epics, not just one. Do not end your turn
-until all are complete. DO NOT WAIT for to continue onto the next wave,
-complete them all without additional input. After each implementation agent
-completes their task, spawn an additional review agent to verify its completion
-and it is validated.
+until all are complete. DO NOT WAIT to continue onto the next wave, complete
+them all without additional input. After each implementation agent completes
+their task, spawn an additional review agent to verify its completion and
+validation.
 
 ---
 
@@ -42,8 +42,6 @@ phase silently.
 
 - **`TODO_INDEX.md` wins for ownership** of TODO IDs and cross-repo
   coordination when two artefacts disagree.
-- **In-session task list** (`TaskCreate` / TodoWrite / checklist) is for
-  scheduling only; it must not contradict settled rows in `TODO_INDEX.md`.
 - If another orchestrator’s claim appears mid-run (new `IN-PROGRESS`,
   orchestrator note, or overlapping branch name), **yield** that task or ID,
   append a `YIELD` line to `run-log.md`, and continue with unclaimed work.
@@ -208,19 +206,17 @@ loop:
 
 5. **merge → log** (strict order for each returning validation worker):
 
-   1. Re-run the task’s acceptance command **yourself** from the **worktree**
-      (before merge).
-   2. Read the diff. Reject if you find: stubs, `todo!()` / `unimplemented!()`,
+   1. Read the diff. Reject if you find: stubs, `todo!()` / `unimplemented!()`,
       TODO/FIXME comments added by the worker, empty function bodies, skipped
       tests, scope creep, new abstractions the task did not call for, convention
       violations, or deferred sub-work.
-   3. If incomplete or dirty: spawn a **fresh** subagent (same model tier rules)
+   2. If incomplete or dirty: spawn a **fresh** subagent (same model tier rules)
       with the capped brief above. Do not accept “mostly working” — iterate until
       clean or escalate per **Escalation** below.
-   4. If clean: merge the worktree branch into the feature branch with `--no-ff`
+   3. If clean: merge the worktree branch into the feature branch with `--no-ff`
       (preserve atomic commits), then delete the worktree (`git worktree remove`)
       and its branch (`git branch -d`).
-   5. Append `DONE` (or appropriate status) to `run-log.md` and update the
+   4. Append `DONE` (or appropriate status) to `run-log.md` and update the
       session task list and tracker files.
 
 ---
@@ -229,16 +225,13 @@ loop:
 
 After each epic’s tasks are DONE, and **before** moving to the next epic:
 
-1. Run the epic-level verification from its `epic.md` when commands are listed
-   there.
+1. Spawn a subagent to run the epic-level verification from its `epic.md` when
+   commands are listed there. If the subagent fails, spawn an addiitonal
+   subagent to resolve issues.
 2. **If the epic is silent on verification**, run from the feature branch (main
    clone checkout of the feature tip is OK for orchestrator-driven commands):
 
    `./run.ts lint && ./run.ts build && ./run.ts test`
-
-   Add WASM (`./run.ts wasm-check` and/or `./run.ts build --wasm`) or
-   `./run.ts platform-check` when the epic or `plan.md` section 5 (Cross-cutting
-   verification) implies those surfaces are touched.
 
    If validation fails, spawn a subagent to address the failures before moving on.
 
@@ -249,12 +242,11 @@ After each epic’s tasks are DONE, and **before** moving to the next epic:
 After each epic’s tasks are DONE, and **before** moving to the next epic:
 
 1. Epic verification (see **Epic verification defaults** above).
-2. Spawn a review subagent (**strong model**, e.g. opus-class) to critique the
-   landed epic against its design doc and acceptance criteria. Feed it the epic
-   doc, the merged diff range, and `run-log.md`. Address every concern it raises
-   before advancing — either by spawning fix subagents (fast tier) or, if the
-   concern is out of scope, documenting the decision in `run-log.md` with
-   rationale.
+2. Spawn a review subagent to critique the landed epic against its design doc
+   and acceptance criteria. Feed it the epic doc, the merged diff range, and
+   `run-log.md`. Address every concern it raises before advancing — either by
+   spawning fix subagents (fast tier) or, if the concern is out of scope,
+   documenting the decision in `run-log.md` with rationale.
 3. Regressions become new `task_NNN.md` entries under the owning epic — do not
    hotfix inline. Add them to your session task list.
 4. Update `TODO_INDEX.md` when parent TODO items are fully satisfied. Never
@@ -268,9 +260,9 @@ When all non-deferred epics are DONE:
 
 1. Run the cross-cutting verification from `plan.md` end-to-end on the feature
    branch.
-2. Fan out final review across parallel subagents (**strong model**). Dispatch
-   in one message with multiple calls when possible. **Cap concurrent strong-model
-   reviewers at 4**; if there are more epics than slots, batch epic reviewers in
+2. Fan out final review across parallel subagents. Dispatch
+   in one message with multiple calls when possible. **Cap concurrent
+   reviewers at 6**; if there are more epics than slots, batch epic reviewers in
    groups and merge findings between batches.
 
    - **One reviewer per epic:** brief each with the epic doc, its design doc(s),
@@ -296,10 +288,9 @@ When all non-deferred epics are DONE:
 
    Aggregate all reviewer findings before proceeding to step 3.
 
-3. If the review finds gaps: create or update `docs/plan/meta-plan/followup.md`,
-   add the gap items to your session task list and to `TODO.md` /
-   `TODO_INDEX.md`, and resume Phase 1 until the follow-up is itself complete and
-   reviewed. Do not stop early.
+3. If the review finds gaps: add the gap items to your session task list and to
+   `TODO.md` / `TODO_INDEX.md`, and resume Phase 1 until the follow-up is
+   itself complete and reviewed. Do not stop early.
 4. Write `docs/plan/meta-plan/completion-report.md`: TODO items closed, items
    deferred (with reason — e.g. blocked on GPU hardware not available in CI),
    test evidence, review findings, the feature branch name ready for PR.
@@ -353,3 +344,8 @@ deferral in `TODO.md` / `TODO_INDEX.md`, and continue with the rest of the plan.
   conflicting claim appeared mid-run, yield that item and note it.
 - Follow `AGENTS.md` conventions in every subagent brief; do not rely on the
   subagent to rediscover them.
+- When running via claude, **ONLY use sonnet model for subagents**, never default.
+- When running via cursor/agent, **ONLY use `fast` for subagents**, never default.
+- When running via codex, **ONLY use `gpt-5.4-mini` with reasoning `high` for
+  subagents**, never default. Always run subagents in the background so you can
+  keep the agent pool fully occupied.
