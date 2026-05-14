@@ -75,6 +75,48 @@ Total: 2 bugs (2 high, 0 medium, 0 low)
     .unwrap();
 }
 
+fn write_reproduce_targets_registry_many_bugs(root: &Path, count: usize) {
+    let p = root.join("docs/bugs/extra-for-repro.md");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let mut content =
+        format!("# Bug Bash Registry - extra\n\nGenerated: 2020-01-01\nTotal: {count} bugs\n\n");
+    for n in 1..=count {
+        content.push_str(&format!(
+            "## BUG-{n:03} - Example bug {n}\n- Severity: high\n- Location: src/lib.rs:{n}\n- Description: test {n}\n\n"
+        ));
+    }
+    fs::write(&p, content).unwrap();
+}
+
+fn write_reproduce_state(root: &Path, entries: &[(&str, &str)]) {
+    let p = root.join("docs/bugs/reproduce-state.json");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let mut map = serde_json::Map::new();
+    for (key, status) in entries {
+        map.insert(
+            (*key).to_string(),
+            serde_json::json!({
+                "status": status,
+            }),
+        );
+    }
+    fs::write(&p, serde_json::to_string_pretty(&map).unwrap()).unwrap();
+}
+
+fn captured_phase_count(record_dir: &Path) -> usize {
+    fs::read_dir(record_dir)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("phase_")
+        })
+        .count()
+}
+
 struct Fixture {
     root: TempDir,
     record_dir: TempDir,
@@ -349,6 +391,272 @@ fn bug_bash_reproduce_parallel_invokes_all_bugs() {
         stdout.contains("done: 2"),
         "expected done: 2 in stdout summary; got:\n{stdout}"
     );
+}
+
+#[test]
+fn bug_bash_reproduce_skips_terminal_state_entries() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+    write_reproduce_state(
+        root.path(),
+        &[("docs/bugs/extra-for-repro.md#BUG-001", "reproduced")],
+    );
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reproduce resume: skipped 1 terminal work item(s), 1 remaining"),
+        "stdout was:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("reproduce: docs/bugs/extra-for-repro.md#BUG-001"),
+        "BUG-001 should not have been dispatched; stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("reproduce: docs/bugs/extra-for-repro.md#BUG-002"),
+        "BUG-002 should have been dispatched; stdout was:\n{stdout}"
+    );
+    let captured = fs::read_to_string(record_dir.path().join("phase_1.txt")).unwrap();
+    assert_eq!(
+        captured.trim_end(),
+        expected_reproduce_prompt("docs/bugs/extra-for-repro.md#BUG-002", false).trim_end(),
+    );
+    assert_eq!(captured_phase_count(record_dir.path()), 1);
+}
+
+#[test]
+fn bug_bash_reproduce_parallel_skips_terminal_state_entries() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+    write_reproduce_state(
+        root.path(),
+        &[("docs/bugs/extra-for-repro.md#BUG-001", "withdrawn")],
+    );
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--jobs",
+            "2",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("reproduce: docs/bugs/extra-for-repro.md#BUG-001"),
+        "BUG-001 should not have been dispatched; stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("reproduce: docs/bugs/extra-for-repro.md#BUG-002"),
+        "BUG-002 should have been dispatched; stdout was:\n{stdout}"
+    );
+    assert_eq!(captured_phase_count(record_dir.path()), 1);
+}
+
+#[test]
+fn bug_bash_reproduce_status_filter_only_skips_terminal_statuses() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_many_bugs(root.path(), 9);
+    write_reproduce_state(
+        root.path(),
+        &[
+            ("docs/bugs/extra-for-repro.md#BUG-001", "reproduced"),
+            ("docs/bugs/extra-for-repro.md#BUG-002", "withdrawn"),
+            ("docs/bugs/extra-for-repro.md#BUG-003", "blocked"),
+            ("docs/bugs/extra-for-repro.md#BUG-004", "failed"),
+            ("docs/bugs/extra-for-repro.md#BUG-005", "pending"),
+            ("docs/bugs/extra-for-repro.md#BUG-006", "in_progress"),
+            ("docs/bugs/extra-for-repro.md#BUG-007", "needs-review"),
+            ("docs/bugs/extra-for-repro.md#BUG-008", "unexpected"),
+        ],
+    );
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for n in 1..=4 {
+        assert!(
+            !stdout.contains(&format!(
+                "reproduce: docs/bugs/extra-for-repro.md#BUG-{n:03}"
+            )),
+            "terminal BUG-{n:03} should not have been dispatched; stdout was:\n{stdout}"
+        );
+    }
+    for n in 5..=9 {
+        assert!(
+            stdout.contains(&format!(
+                "reproduce: docs/bugs/extra-for-repro.md#BUG-{n:03}"
+            )),
+            "non-terminal BUG-{n:03} should have been dispatched; stdout was:\n{stdout}"
+        );
+    }
+    assert_eq!(captured_phase_count(record_dir.path()), 5);
+}
+
+#[test]
+fn bug_bash_reproduce_restart_ignores_existing_state() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+    write_reproduce_state(
+        root.path(),
+        &[
+            ("docs/bugs/extra-for-repro.md#BUG-001", "reproduced"),
+            ("docs/bugs/extra-for-repro.md#BUG-002", "withdrawn"),
+        ],
+    );
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--restart",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("BUG-001"), "stdout was:\n{stdout}");
+    assert!(stdout.contains("BUG-002"), "stdout was:\n{stdout}");
+    assert_eq!(captured_phase_count(record_dir.path()), 2);
+    assert!(
+        !root.path().join("docs/bugs/reproduce-state.json").exists(),
+        "restart should archive the active state file"
+    );
+}
+
+#[test]
+fn bug_bash_reproduce_dry_run_reports_filtered_queue() {
+    let root = tempdir().unwrap();
+    let src_dir = root.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn example() -> usize { 1 }\n").unwrap();
+    write_reproduce_targets_registry_two_bugs(root.path());
+    write_reproduce_state(
+        root.path(),
+        &[("docs/bugs/extra-for-repro.md#BUG-001", "blocked")],
+    );
+
+    let record_dir = tempdir().unwrap();
+    let stub = make_stub(record_dir.path(), None);
+
+    let output = bin()
+        .args([
+            "bug-bash",
+            "--cli",
+            "claude",
+            "--phase",
+            "reproduce",
+            "--dry-run",
+            "--root",
+        ])
+        .arg(root.path())
+        .env("AGENTS_CLAUDE_BIN", &stub)
+        .env_remove("AGENTS_WORKFLOW_TIMEOUT_SECS")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reproduce resume: skipped 1 terminal work item(s), 1 remaining"),
+        "stdout was:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("--- reproduce 1/2 (docs/bugs/extra-for-repro.md#BUG-001)"),
+        "BUG-001 should not appear in the dry-run queue; stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--- reproduce 1/1 (docs/bugs/extra-for-repro.md#BUG-002)"),
+        "BUG-002 should appear as the only dry-run work item; stdout was:\n{stdout}"
+    );
+    assert_eq!(captured_phase_count(record_dir.path()), 0);
 }
 
 #[test]

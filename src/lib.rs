@@ -967,10 +967,74 @@ fn archive_reproduce_state(root: &Path) -> Result<(), AgentsError> {
     Ok(())
 }
 
+fn filter_bug_reproduce_resume_items(
+    root: &Path,
+    items: Vec<BugReproduceWorkItem>,
+    restart: bool,
+) -> (Vec<BugReproduceWorkItem>, usize) {
+    if restart {
+        return (items, 0);
+    }
+
+    let path = root.join(BUG_REPRODUCE_STATE);
+    if !path.is_file() {
+        return (items, 0);
+    }
+
+    let state = match fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+    {
+        Some(Value::Object(state)) => state,
+        _ => {
+            eprintln!(
+                "warning: could not read {BUG_REPRODUCE_STATE} as a JSON object; processing all reproduce work items"
+            );
+            return (items, 0);
+        }
+    };
+
+    let before = items.len();
+    let remaining = items
+        .into_iter()
+        .filter(|item| {
+            let key = item.work_item_key();
+            !state
+                .get(&key)
+                .and_then(|entry| entry.get("status"))
+                .and_then(Value::as_str)
+                .is_some_and(is_terminal_bug_reproduce_status)
+        })
+        .collect::<Vec<_>>();
+    let skipped = before.saturating_sub(remaining.len());
+    (remaining, skipped)
+}
+
+fn is_terminal_bug_reproduce_status(status: &str) -> bool {
+    matches!(status, "reproduced" | "withdrawn" | "blocked" | "failed")
+}
+
 fn bug_reproduce(root: &Path, cli: AgentCli, config: &BugSearchConfig) -> Result<(), AgentsError> {
-    let items = discover_bug_reproduce_work_items(root)?;
+    let mut items = discover_bug_reproduce_work_items(root)?;
     if items.is_empty() {
         println!("no bugs under {BUG_SEARCH_OUTPUT_ROOT} matched for reproduce");
+        return Ok(());
+    }
+
+    if config.restart && !config.dry_run {
+        archive_reproduce_state(root)?;
+    }
+
+    let (filtered_items, skipped) = filter_bug_reproduce_resume_items(root, items, config.restart);
+    items = filtered_items;
+    if skipped > 0 {
+        println!(
+            "reproduce resume: skipped {skipped} terminal work item(s), {} remaining",
+            items.len()
+        );
+    }
+    if items.is_empty() {
+        println!("no pending reproduce work items");
         return Ok(());
     }
 
@@ -994,10 +1058,6 @@ fn bug_reproduce(root: &Path, cli: AgentCli, config: &BugSearchConfig) -> Result
             );
         }
         return Ok(());
-    }
-
-    if config.restart {
-        archive_reproduce_state(root)?;
     }
 
     let (done, failed, first_error) = if config.jobs <= 1 {
@@ -1056,9 +1116,9 @@ fn run_bug_reproduce_parallel(
     let config = config.clone();
     let timeout = workflow_timeout();
     let worker_count = config.jobs.min(items.len());
-    let queue = Arc::new(Mutex::new(
-        VecDeque::from(items.into_iter().enumerate().collect::<Vec<_>>()),
-    ));
+    let queue = Arc::new(Mutex::new(VecDeque::from(
+        items.into_iter().enumerate().collect::<Vec<_>>(),
+    )));
     let (tx, rx) = mpsc::channel::<(usize, String, Result<(), AgentsError>)>();
 
     thread::scope(|scope| {
@@ -1067,17 +1127,19 @@ fn run_bug_reproduce_parallel(
             let tx = tx.clone();
             let root = root.clone();
             let config = config.clone();
-            scope.spawn(move || loop {
-                let item = {
-                    let mut q = queue.lock().expect("reproduce queue poisoned");
-                    q.pop_front()
-                };
-                let Some((idx, item)) = item else { break };
-                let key = item.work_item_key();
-                println!("[{}/{}] reproduce: {key}", idx + 1, total);
-                let prompt = render_bug_reproduce_prompt(&config, &key);
-                let result = run_agent_interactive(cli, &root, &prompt, timeout);
-                let _ = tx.send((idx, key, result));
+            scope.spawn(move || {
+                loop {
+                    let item = {
+                        let mut q = queue.lock().expect("reproduce queue poisoned");
+                        q.pop_front()
+                    };
+                    let Some((idx, item)) = item else { break };
+                    let key = item.work_item_key();
+                    println!("[{}/{}] reproduce: {key}", idx + 1, total);
+                    let prompt = render_bug_reproduce_prompt(&config, &key);
+                    let result = run_agent_interactive(cli, &root, &prompt, timeout);
+                    let _ = tx.send((idx, key, result));
+                }
             });
         }
         drop(tx);
@@ -1327,9 +1389,11 @@ fn run_bug_search_agent(
         AgentCli::Codex => {
             command
                 .arg("exec")
-                .arg("--dangerously-bypass-approvals-and-sandbox")
+                .arg("--yolo")
                 .arg("-C")
                 .arg(root)
+                .arg("--model")
+                .arg("gpt-5.3-codex-spark")
                 .arg(&instruction);
         }
     }

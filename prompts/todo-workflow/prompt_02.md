@@ -1,6 +1,6 @@
 # Implementation orchestrator prompt
 
-You are the implementation orchestrator. A planning agent (see prompt_01.md) has
+You are the implementation orchestrator. A planning agent has
 already produced docs/plan/meta-plan/plan.md, reviewed design docs under
 docs/features/, epics under docs/plan/meta-plan/epics/<epic>.md, and atomic
 tasks under docs/plan/meta-plan/epics/<epic>/task_NNN.md. Your job is to drive
@@ -346,6 +346,6 @@ deferral in `TODO.md` / `TODO_INDEX.md`, and continue with the rest of the plan.
   subagent to rediscover them.
 - When running via claude, **ONLY use sonnet model for subagents**, never default.
 - When running via cursor/agent, **ONLY use `fast` for subagents**, never default.
-- When running via codex, **ONLY use `gpt-5.4-mini` with reasoning `high` for
+- When running via codex, **ONLY use `gpt-5.4` with reasoning `medium` for
   subagents**, never default. Always run subagents in the background so you can
   keep the agent pool fully occupied.
