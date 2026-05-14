@@ -273,6 +273,7 @@ pub enum AgentCli {
     Claude,
     Codex,
     Copilot,
+    Agent,
 }
 
 impl AgentCli {
@@ -283,6 +284,7 @@ impl AgentCli {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Copilot => "copilot",
+            Self::Agent => "agent",
         }
     }
 
@@ -293,6 +295,7 @@ impl AgentCli {
             Self::Claude => "AGENTS_CLAUDE_BIN",
             Self::Codex => "AGENTS_CODEX_BIN",
             Self::Copilot => "AGENTS_COPILOT_BIN",
+            Self::Agent => "AGENTS_AGENT_BIN",
         }
     }
 
@@ -1396,6 +1399,9 @@ fn run_bug_search_agent(
                 .arg("gpt-5.3-codex-spark")
                 .arg(&instruction);
         }
+        AgentCli::Agent => {
+            command.arg("-p").arg("--yolo").arg(&instruction);
+        }
     }
 
     if dry_run {
@@ -1730,6 +1736,13 @@ fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsE
             Some(prompt),
             parse_stream_json_line,
         ),
+        AgentCli::Agent => run_parsed_command(
+            cli.command()
+                .current_dir(root)
+                .args(["-p", "--yolo", "--output-format", "stream-json"]),
+            Some(prompt),
+            parse_stream_json_line,
+        ),
     }
 }
 
@@ -1776,6 +1789,11 @@ pub fn run_agent_interactive(
                 .arg(root)
                 .arg("-");
             run_interactive_command(&mut c, prompt, timeout)
+        }
+        AgentCli::Agent => {
+            let mut c = cli.command();
+            c.current_dir(root).arg("--yolo").arg(prompt);
+            run_interactive_tty_command(&mut c, timeout)
         }
     }
 }
