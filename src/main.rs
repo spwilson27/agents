@@ -59,6 +59,11 @@ enum Command {
             help = "Print the resolved plan and exit without invoking the agent."
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Run the agent CLI non-interactively (piped I/O, no TTY)."
+        )]
+        headless: bool,
     },
     #[command(about = "Run the two-phase pipeclean orchestration (fix local + CI, then review).")]
     PipeClean {
@@ -83,6 +88,11 @@ enum Command {
             help = "Print the resolved plan and exit without invoking the agent."
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Run the agent CLI non-interactively (piped I/O, no TTY)."
+        )]
+        headless: bool,
     },
     #[command(
         about = "Run the final-review workflow (bookkeeping, rebase, presubmit, PR, two review passes)."
@@ -102,6 +112,11 @@ enum Command {
             help = "Print the resolved plan and exit without invoking the agent."
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Run the agent CLI non-interactively (piped I/O, no TTY)."
+        )]
+        headless: bool,
     },
     #[command(about = "Run the two-phase bug-bash workflow (search, reproduce).")]
     BugBash {
@@ -126,6 +141,11 @@ enum Command {
             help = "Print the resolved plan and exit without invoking the agent."
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Run the agent CLI non-interactively (piped I/O, no TTY)."
+        )]
+        headless: bool,
         #[arg(
             long,
             default_value = "src",
@@ -198,8 +218,9 @@ fn main() {
             root,
             phase,
             dry_run,
+            headless,
         }) => {
-            if let Err(err) = agents::todo_workflow(&root, cli, phase, dry_run) {
+            if let Err(err) = agents::todo_workflow(&root, cli, phase, dry_run, headless) {
                 eprintln!("{err}");
                 process::exit(1);
             }
@@ -209,14 +230,15 @@ fn main() {
             root,
             phase,
             dry_run,
+            headless,
         }) => {
-            if let Err(err) = agents::pipeclean(&root, cli, phase, dry_run) {
+            if let Err(err) = agents::pipeclean(&root, cli, phase, dry_run, headless) {
                 eprintln!("{err}");
                 process::exit(1);
             }
         }
-        Some(Command::FinalReview { cli, root, dry_run }) => {
-            if let Err(err) = agents::final_review(&root, cli, dry_run) {
+        Some(Command::FinalReview { cli, root, dry_run, headless }) => {
+            if let Err(err) = agents::final_review(&root, cli, dry_run, headless) {
                 eprintln!("{err}");
                 process::exit(1);
             }
@@ -226,6 +248,7 @@ fn main() {
             root,
             phase,
             dry_run,
+            headless,
             search_root,
             force,
             limit,
@@ -237,6 +260,7 @@ fn main() {
                 source_root: search_root,
                 force,
                 dry_run,
+                headless,
                 limit,
                 start_at,
                 jobs,

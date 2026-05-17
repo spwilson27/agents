@@ -605,10 +605,33 @@ fn bug_bash_reproduce_restart_ignores_existing_state() {
     assert!(stdout.contains("BUG-001"), "stdout was:\n{stdout}");
     assert!(stdout.contains("BUG-002"), "stdout was:\n{stdout}");
     assert_eq!(captured_phase_count(record_dir.path()), 2);
-    assert!(
-        !root.path().join("docs/bugs/reproduce-state.json").exists(),
-        "restart should archive the active state file"
-    );
+    // The old state file should have been archived (renamed with a timestamp).
+    let archived = fs::read_dir(root.path().join("docs/bugs"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("reproduce-state.json.archived-")
+        });
+    assert!(archived, "restart should archive the old state file");
+
+    // The binary recreates the state file with fresh entries as agents complete.
+    let state_path = root.path().join("docs/bugs/reproduce-state.json");
+    if state_path.exists() {
+        let content = fs::read_to_string(&state_path).unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let obj = state.as_object().unwrap();
+        // Fresh entries should be present (written by the binary after agent exit).
+        assert!(
+            obj.contains_key("docs/bugs/extra-for-repro.md#BUG-001"),
+            "state file should contain BUG-001"
+        );
+        assert!(
+            obj.contains_key("docs/bugs/extra-for-repro.md#BUG-002"),
+            "state file should contain BUG-002"
+        );
+    }
 }
 
 #[test]

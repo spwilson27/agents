@@ -24,6 +24,7 @@ pub const TARGETS: &[(&str, &str)] = &[
     ("codex", "AGENTS.md"),
     ("gemini", "GEMINI.md"),
     ("copilot", ".github/copilot-instructions.md"),
+    ("opencode", "opencode.json"),
     ("qwen", "QWEN.md"),
 ];
 
@@ -273,6 +274,7 @@ pub enum AgentCli {
     Claude,
     Codex,
     Copilot,
+    Opencode,
     Agent,
 }
 
@@ -284,6 +286,7 @@ impl AgentCli {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Copilot => "copilot",
+            Self::Opencode => "opencode",
             Self::Agent => "agent",
         }
     }
@@ -295,6 +298,7 @@ impl AgentCli {
             Self::Claude => "AGENTS_CLAUDE_BIN",
             Self::Codex => "AGENTS_CODEX_BIN",
             Self::Copilot => "AGENTS_COPILOT_BIN",
+            Self::Opencode => "AGENTS_OPENCODE_BIN",
             Self::Agent => "AGENTS_AGENT_BIN",
         }
     }
@@ -586,6 +590,7 @@ pub fn todo_workflow(
     cli: AgentCli,
     phase: Phase,
     dry_run: bool,
+    headless: bool,
 ) -> Result<Vec<WorkflowPlanEntry>, AgentsError> {
     let expanded: Vec<Phase> = phase.expand();
 
@@ -607,6 +612,7 @@ pub fn todo_workflow(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        println!("headless: {headless}");
         for (idx, entry) in plan.iter().enumerate() {
             println!(
                 "\n--- prompt {} ({}) ---\n{}",
@@ -622,7 +628,7 @@ pub fn todo_workflow(
     for (idx, entry) in plan.iter().enumerate() {
         eprintln!("=== Phase {}: {} ===", idx + 1, entry.phase.label());
         let prompt = entry.phase.prompt_body();
-        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
+        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout, headless) {
             eprintln!(
                 "phase {} ({}) failed; resume with --phase {}",
                 idx + 1,
@@ -645,6 +651,7 @@ pub fn pipeclean(
     cli: AgentCli,
     phase: PipeCleanPhase,
     dry_run: bool,
+    headless: bool,
 ) -> Result<Vec<PipeCleanPlanEntry>, AgentsError> {
     let expanded: Vec<PipeCleanPhase> = phase.expand();
 
@@ -664,6 +671,7 @@ pub fn pipeclean(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        println!("headless: {headless}");
         for (idx, entry) in plan.iter().enumerate() {
             println!(
                 "\n--- prompt {} ({}) ---\n{}",
@@ -679,7 +687,7 @@ pub fn pipeclean(
     for (idx, entry) in plan.iter().enumerate() {
         eprintln!("=== Phase {}: {} ===", idx + 1, entry.phase.label());
         let prompt = entry.phase.prompt_body();
-        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout) {
+        if let Err(err) = run_agent_interactive(cli, root, prompt, timeout, headless) {
             eprintln!(
                 "phase {} ({}) failed; resume with --phase {}",
                 idx + 1,
@@ -693,7 +701,12 @@ pub fn pipeclean(
     Ok(plan)
 }
 
-pub fn final_review(root: &Path, cli: AgentCli, dry_run: bool) -> Result<(), AgentsError> {
+pub fn final_review(
+    root: &Path,
+    cli: AgentCli,
+    dry_run: bool,
+    headless: bool,
+) -> Result<(), AgentsError> {
     if matches!(cli, AgentCli::Codex) {
         eprintln!(
             "warning: --cli codex uses one-shot exec; claude is recommended for final-review"
@@ -705,13 +718,14 @@ pub fn final_review(root: &Path, cli: AgentCli, dry_run: bool) -> Result<(), Age
         println!("  1. final-review (embedded)");
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        println!("headless: {headless}");
         println!("\n--- prompt 1 (final-review) ---\n{FINAL_REVIEW_PROMPT}");
         return Ok(());
     }
 
     let timeout = workflow_timeout();
     eprintln!("=== Phase 1: final-review ===");
-    run_agent_interactive(cli, root, FINAL_REVIEW_PROMPT, timeout)
+    run_agent_interactive(cli, root, FINAL_REVIEW_PROMPT, timeout, headless)
 }
 
 pub struct BugBashPlanEntry {
@@ -723,6 +737,7 @@ pub struct BugSearchConfig {
     pub source_root: PathBuf,
     pub force: bool,
     pub dry_run: bool,
+    pub headless: bool,
     pub limit: Option<usize>,
     pub start_at: Option<PathBuf>,
     pub jobs: usize,
@@ -735,6 +750,7 @@ impl BugSearchConfig {
             source_root: PathBuf::from("src"),
             force: false,
             dry_run,
+            headless: false,
             limit: None,
             start_at: None,
             jobs: 1,
@@ -748,8 +764,11 @@ pub fn bug_bash(
     cli: AgentCli,
     phase: BugBashPhase,
     dry_run: bool,
+    headless: bool,
 ) -> Result<Vec<BugBashPlanEntry>, AgentsError> {
-    bug_bash_with_search_config(root, cli, phase, BugSearchConfig::new(dry_run))
+    let mut config = BugSearchConfig::new(dry_run);
+    config.headless = headless;
+    bug_bash_with_search_config(root, cli, phase, config)
 }
 
 pub fn bug_bash_with_search_config(
@@ -783,6 +802,7 @@ pub fn bug_bash_with_search_config(
         }
         println!("cli: {}", cli.binary_name());
         println!("root: {}", root.display());
+        println!("headless: {}", search_config.headless);
         for (idx, entry) in plan.iter().enumerate() {
             if matches!(entry.phase, BugBashPhase::Search) {
                 println!("\n--- phase {} (search) ---", idx + 1);
@@ -812,7 +832,7 @@ pub fn bug_bash_with_search_config(
             bug_reproduce(root, cli, &search_config)
         } else {
             let prompt = bug_bash_phase_prompt(entry.phase, &search_config);
-            run_agent_interactive(cli, root, &prompt, timeout)
+            run_agent_interactive(cli, root, &prompt, timeout, search_config.headless)
         };
         if let Err(err) = result {
             eprintln!(
@@ -956,6 +976,38 @@ fn bug_id_numeric_suffix(id: &str) -> u32 {
         .unwrap_or(0)
 }
 
+fn update_reproduce_state_entry(root: &Path, key: &str, status: &str) -> Result<(), AgentsError> {
+    let state_path = root.join(BUG_REPRODUCE_STATE);
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut state: serde_json::Map<String, Value> = if state_path.is_file() {
+        let content = fs::read_to_string(&state_path)?;
+        match serde_json::from_str::<Value>(&content) {
+            Ok(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
+
+    // Merge: preserve existing fields, update status
+    let entry = state
+        .entry(key.to_owned())
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert("status".to_owned(), Value::String(status.to_owned()));
+    }
+
+    let tmp_path = state_path.with_extension("json.tmp");
+    let serialized =
+        serde_json::to_string_pretty(&Value::Object(state)).map_err(io::Error::other)? + "\n";
+    fs::write(&tmp_path, serialized)?;
+    fs::rename(tmp_path, state_path)?;
+    Ok(())
+}
+
 fn archive_reproduce_state(root: &Path) -> Result<(), AgentsError> {
     let path = root.join(BUG_REPRODUCE_STATE);
     if !path.is_file() {
@@ -1093,11 +1145,15 @@ fn run_bug_reproduce_sequential(
         let key = item.work_item_key();
         println!("[{}/{}] reproduce: {key}", idx + 1, total);
         let prompt = render_bug_reproduce_prompt(config, &key);
-        match run_agent_interactive(cli, root, &prompt, timeout) {
-            Ok(()) => done += 1,
+        match run_agent_interactive(cli, root, &prompt, timeout, config.headless) {
+            Ok(()) => {
+                done += 1;
+                let _ = update_reproduce_state_entry(root, &key, "reproduced");
+            }
             Err(err) => {
                 eprintln!("  [{}/{}] reproduce {key} failed: {err}", idx + 1, total);
                 failed += 1;
+                let _ = update_reproduce_state_entry(root, &key, "failed");
                 if first_error.is_none() {
                     first_error = Some(err);
                 }
@@ -1122,11 +1178,13 @@ fn run_bug_reproduce_parallel(
     let queue = Arc::new(Mutex::new(VecDeque::from(
         items.into_iter().enumerate().collect::<Vec<_>>(),
     )));
+    let state_lock = Arc::new(Mutex::new(()));
     let (tx, rx) = mpsc::channel::<(usize, String, Result<(), AgentsError>)>();
 
     thread::scope(|scope| {
         for _ in 0..worker_count {
             let queue = Arc::clone(&queue);
+            let state_lock = Arc::clone(&state_lock);
             let tx = tx.clone();
             let root = root.clone();
             let config = config.clone();
@@ -1140,7 +1198,17 @@ fn run_bug_reproduce_parallel(
                     let key = item.work_item_key();
                     println!("[{}/{}] reproduce: {key}", idx + 1, total);
                     let prompt = render_bug_reproduce_prompt(&config, &key);
-                    let result = run_agent_interactive(cli, &root, &prompt, timeout);
+                    let result =
+                        run_agent_interactive(cli, &root, &prompt, timeout, config.headless);
+                    {
+                        let _guard = state_lock.lock().expect("state lock poisoned");
+                        let status = if result.is_ok() {
+                            "reproduced"
+                        } else {
+                            "failed"
+                        };
+                        let _ = update_reproduce_state_entry(&root, &key, status);
+                    }
                     let _ = tx.send((idx, key, result));
                 }
             });
@@ -1354,7 +1422,7 @@ fn bug_search_one(
     }
 
     println!("[{idx}/{total_files}] search: {rel_src} -> {rel_out}");
-    let result = run_bug_search_agent(cli, root, &prompt_path, config.dry_run);
+    let result = run_bug_search_agent(cli, root, &prompt_path, config.dry_run, config.headless);
 
     if config.jobs != 1 && !config.dry_run {
         let _ = fs::remove_file(prompt_path);
@@ -1368,6 +1436,7 @@ fn run_bug_search_agent(
     root: &Path,
     prompt_path: &Path,
     dry_run: bool,
+    headless: bool,
 ) -> Result<(), AgentsError> {
     let prompt_ref = format!("@{}", rel_display(root, prompt_path));
     let instruction = format!("Read and follow the following prompt {prompt_ref}");
@@ -1378,7 +1447,7 @@ fn run_bug_search_agent(
             command.arg("-p").arg(&prompt_ref).arg("--yolo");
         }
         AgentCli::Qwen => {
-            command.arg("-p").arg(&instruction).arg("--yolo");
+            command.arg("-p").arg(&instruction).arg("-y");
         }
         AgentCli::Copilot => {
             command.arg("--allow-all-tools").arg("-p").arg(&instruction);
@@ -1399,6 +1468,15 @@ fn run_bug_search_agent(
                 .arg("gpt-5.3-codex-spark")
                 .arg(&instruction);
         }
+        AgentCli::Opencode => {
+            command
+                .arg("run")
+                .arg("--dangerously-skip-permissions")
+                .arg("-f")
+                .arg(prompt_path)
+                .arg("--")
+                .arg("Read and follow the instructions in the attached file.");
+        }
         AgentCli::Agent => {
             command.arg("-p").arg("--yolo").arg(&instruction);
         }
@@ -1406,6 +1484,9 @@ fn run_bug_search_agent(
 
     if dry_run {
         print_dry_run_command(&command);
+        Ok(())
+    } else if headless {
+        let _ = run_command(&mut command, None, workflow_timeout())?;
         Ok(())
     } else {
         run_interactive_tty_command(&mut command, workflow_timeout())
@@ -1710,9 +1791,9 @@ fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsE
             cli.command().current_dir(root).args([
                 "-p",
                 "--dangerously-skip-permissions",
-                "--output-format",
-                "stream-json",
-                "--include-partial-messages",
+                //"--output-format",
+                //"stream-json",
+                //"--include-partial-messages",
                 "--verbose",
             ]),
             Some(prompt),
@@ -1736,10 +1817,25 @@ fn run_agent(cli: AgentCli, root: &Path, prompt: &str) -> Result<String, AgentsE
             Some(prompt),
             parse_stream_json_line,
         ),
+        AgentCli::Opencode => run_parsed_command(
+            cli.command().current_dir(root).args([
+                "run",
+                "--format",
+                "json",
+                "--dangerously-skip-permissions",
+                "--",
+                prompt,
+            ]),
+            Some(prompt),
+            parse_stream_json_line,
+        ),
         AgentCli::Agent => run_parsed_command(
-            cli.command()
-                .current_dir(root)
-                .args(["-p", "--yolo", "--output-format", "stream-json"]),
+            cli.command().current_dir(root).args([
+                "-p",
+                "--yolo",
+                "--output-format",
+                "stream-json",
+            ]),
             Some(prompt),
             parse_stream_json_line,
         ),
@@ -1751,50 +1847,57 @@ pub fn run_agent_interactive(
     root: &Path,
     prompt: &str,
     timeout: Option<Duration>,
+    headless: bool,
 ) -> Result<(), AgentsError> {
-    match cli {
+    let mut c = cli.command();
+    c.current_dir(root);
+    let needs_stdin = match cli {
         AgentCli::Claude => {
-            let mut c = cli.command();
-            c.current_dir(root)
-                .arg("--dangerously-skip-permissions")
-                .arg(prompt);
-            run_interactive_tty_command(&mut c, timeout)
+            c.arg("--dangerously-skip-permissions").arg(prompt);
+            false
         }
         AgentCli::Gemini => {
-            let mut c = cli.command();
-            c.current_dir(root).arg("-y");
-            run_interactive_command(&mut c, prompt, timeout)
+            c.arg("-y");
+            true
         }
         AgentCli::Qwen => {
-            let mut c = cli.command();
-            c.current_dir(root).arg("-y");
-            run_interactive_command(&mut c, prompt, timeout)
+            c.arg("-y");
+            true
         }
         AgentCli::Copilot => {
-            let mut c = cli.command();
-            c.current_dir(root)
-                .arg("--allow-all-tools")
-                .arg("-p")
+            c.arg("--allow-all-tools").arg("-p").arg(prompt);
+            false
+        }
+        AgentCli::Opencode => {
+            c.arg("run")
+                .arg("--dangerously-skip-permissions")
+                .arg("--")
                 .arg(prompt);
-            run_interactive_tty_command(&mut c, timeout)
+            false
         }
         AgentCli::Codex => {
-            let mut c = cli.command();
-            c.current_dir(root)
-                .arg("exec")
+            c.arg("exec")
                 .arg("--skip-git-repo-check")
                 .arg("--color")
                 .arg("never")
                 .arg("-C")
                 .arg(root)
                 .arg("-");
-            run_interactive_command(&mut c, prompt, timeout)
+            true
         }
         AgentCli::Agent => {
-            let mut c = cli.command();
-            c.current_dir(root).arg("--yolo").arg(prompt);
-            run_interactive_tty_command(&mut c, timeout)
+            c.arg("--yolo").arg(prompt);
+            false
         }
+    };
+    if headless {
+        let stdin = if needs_stdin { Some(prompt) } else { None };
+        let _ = run_command(&mut c, stdin, timeout)?;
+        Ok(())
+    } else if needs_stdin {
+        run_interactive_command(&mut c, prompt, timeout)
+    } else {
+        run_interactive_tty_command(&mut c, timeout)
     }
 }
 
@@ -2263,7 +2366,7 @@ mod tests {
     #[test]
     fn dry_run_plan_lists_phases_in_order() {
         let root = tempdir().unwrap();
-        let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, true).unwrap();
+        let plan = todo_workflow(root.path(), AgentCli::Claude, Phase::All, true, false).unwrap();
         let phases: Vec<_> = plan.iter().map(|e| e.phase).collect();
         assert_eq!(
             phases,
@@ -2427,6 +2530,7 @@ mod tests {
                 &root_path,
                 &prompt,
                 Some(Duration::from_secs(5)),
+                false,
             );
             let _ = tx.send(result.is_err());
         });
