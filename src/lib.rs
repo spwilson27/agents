@@ -4,7 +4,7 @@ use std::error::Error as StdError;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -1421,11 +1421,24 @@ fn bug_search_one(
         fs::write(&prompt_path, prompt)?;
     }
 
-    println!("[{idx}/{total_files}] search: {rel_src} -> {rel_out}");
-    let result = run_bug_search_agent(cli, root, &prompt_path, config.dry_run, config.headless);
+    let prefix = format!("[{idx}/{total_files}]");
+    println!("{prefix} search: {rel_src} -> {rel_out}");
+    let result = run_bug_search_agent(
+        cli,
+        root,
+        &prompt_path,
+        config.dry_run,
+        config.headless,
+        &prefix,
+    );
 
     if config.jobs != 1 && !config.dry_run {
         let _ = fs::remove_file(prompt_path);
+    }
+
+    match &result {
+        Ok(()) => println!("[{idx}/{total_files}] done: {rel_src}"),
+        Err(err) => eprintln!("[{idx}/{total_files}] FAIL: {rel_src}: {err}"),
     }
 
     result
@@ -1437,6 +1450,7 @@ fn run_bug_search_agent(
     prompt_path: &Path,
     dry_run: bool,
     headless: bool,
+    stream_prefix: &str,
 ) -> Result<(), AgentsError> {
     let prompt_ref = format!("@{}", rel_display(root, prompt_path));
     let instruction = format!("Read and follow the following prompt {prompt_ref}");
@@ -1457,6 +1471,12 @@ fn run_bug_search_agent(
                 .arg("--dangerously-skip-permissions")
                 .arg("-p")
                 .arg(&instruction);
+            if headless {
+                command
+                    .arg("--verbose")
+                    .arg("--output-format")
+                    .arg("stream-json");
+            }
         }
         AgentCli::Codex => {
             command
@@ -1486,8 +1506,11 @@ fn run_bug_search_agent(
         print_dry_run_command(&command);
         Ok(())
     } else if headless {
-        let _ = run_command(&mut command, None, workflow_timeout())?;
-        Ok(())
+        let format = match cli {
+            AgentCli::Claude => StreamFormat::ClaudeJson,
+            _ => StreamFormat::Raw,
+        };
+        run_command_streaming(&mut command, stream_prefix, workflow_timeout(), format)
     } else {
         run_interactive_tty_command(&mut command, workflow_timeout())
     }
@@ -2098,6 +2121,179 @@ fn run_command(
             &output.stdout,
             &output.stderr,
         ))
+    }
+}
+
+#[derive(Copy, Clone)]
+enum StreamFormat {
+    Raw,
+    ClaudeJson,
+}
+
+fn run_command_streaming(
+    command: &mut Command,
+    prefix: &str,
+    timeout: Option<Duration>,
+    format: StreamFormat,
+) -> Result<(), AgentsError> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    let prefix_out = prefix.to_string();
+    let prefix_err = prefix.to_string();
+    let t_out = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        let stdout = io::stdout();
+        for line in reader.lines().map_while(Result::ok) {
+            let rendered = match format {
+                StreamFormat::Raw => Some(line),
+                StreamFormat::ClaudeJson => format_claude_event(&line),
+            };
+            let Some(rendered) = rendered else { continue };
+            if rendered.is_empty() {
+                continue;
+            }
+            let mut h = stdout.lock();
+            let _ = writeln!(h, "{prefix_out} {rendered}");
+        }
+    });
+    let t_err = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        let stderr = io::stderr();
+        for line in reader.lines().map_while(Result::ok) {
+            let mut h = stderr.lock();
+            let _ = writeln!(h, "{prefix_err} {line}");
+        }
+    });
+
+    let status = if let Some(timeout) = timeout {
+        match child.wait_timeout(timeout)? {
+            Some(status) => status,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = t_out.join();
+                let _ = t_err.join();
+                return Err(AgentsError::TimedOut { program, timeout });
+            }
+        }
+    } else {
+        child.wait()?
+    };
+    let _ = t_out.join();
+    let _ = t_err.join();
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AgentsError::CommandFailed {
+            program,
+            status,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+}
+
+fn format_claude_event(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+        return Some(trimmed.to_owned());
+    };
+    let Some(t) = v.get("type").and_then(Value::as_str) else {
+        return Some(trimmed.to_owned());
+    };
+    match t {
+        "system" => {
+            let sub = v.get("subtype").and_then(Value::as_str).unwrap_or("");
+            Some(format!("system: {sub}"))
+        }
+        "assistant" => {
+            let blocks = v.pointer("/message/content").and_then(Value::as_array)?;
+            let mut parts = Vec::new();
+            for b in blocks {
+                let bt = b.get("type").and_then(Value::as_str).unwrap_or("");
+                match bt {
+                    "text" => {
+                        let text = b.get("text").and_then(Value::as_str).unwrap_or("");
+                        parts.push(format!("asst: {}", squash_one_line(text, 240)));
+                    }
+                    "thinking" => {
+                        let text = b.get("thinking").and_then(Value::as_str).unwrap_or("");
+                        parts.push(format!("think: {}", squash_one_line(text, 240)));
+                    }
+                    "tool_use" => {
+                        let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
+                        let input = b
+                            .get("input")
+                            .map(|i| i.to_string())
+                            .unwrap_or_default();
+                        parts.push(format!(
+                            "tool: {name}({})",
+                            squash_one_line(&input, 180)
+                        ));
+                    }
+                    other => parts.push(format!("asst[{other}]")),
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" | "))
+            }
+        }
+        "user" => {
+            let blocks = v.pointer("/message/content").and_then(Value::as_array)?;
+            let mut parts = Vec::new();
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let is_err = b
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let body = match b.get("content") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(other) => other.to_string(),
+                    None => String::new(),
+                };
+                let tag = if is_err { "result!" } else { "result" };
+                parts.push(format!("{tag}: {}", squash_one_line(&body, 200)));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" | "))
+            }
+        }
+        "result" => {
+            let sub = v.get("subtype").and_then(Value::as_str).unwrap_or("");
+            Some(format!("end: {sub}"))
+        }
+        other => Some(other.to_owned()),
+    }
+}
+
+fn squash_one_line(s: &str, max_chars: usize) -> String {
+    let single: String = s
+        .split('\n')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let count = single.chars().count();
+    if count > max_chars {
+        let head: String = single.chars().take(max_chars).collect();
+        format!("{head}…")
+    } else {
+        single
     }
 }
 
